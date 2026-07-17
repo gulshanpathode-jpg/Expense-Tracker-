@@ -1,0 +1,363 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  DEPARTMENT_HEAD
+  MANAGER
+  ACCOUNTS
+  EMPLOYEE
+}
+
+enum PaymentMode {
+  CREDIT_CARD
+  DEBIT_CARD
+  UPI
+  BANK_TRANSFER
+  PAYPAL
+  CASH
+  CHEQUE
+  OTHERS
+}
+
+enum ExpenseStatus {
+  DRAFT
+  SUBMITTED
+}
+
+enum PurchaseRequestStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_DELIVERED
+  DELIVERED
+  CLOSED
+  CANCELLED
+}
+
+model User {
+  id           String      @id @default(uuid())
+  name         String
+  email        String      @unique
+  passwordHash String
+  role         Role        @default(EMPLOYEE)
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  managerId    String?
+  manager      User?       @relation("UserManager", fields: [managerId], references: [id])
+  reports      User[]      @relation("UserManager")
+  isActive     Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  expenses           Expense[]           @relation("ExpenseSubmitter")
+  auditLogs          AuditLog[]
+  notifications      Notification[]
+  refreshTokens      RefreshToken[]
+  passwordResetCodes PasswordResetCode[]
+  headOf             DepartmentHead[]
+
+  purchaseRequestsMade     PurchaseRequest[]       @relation("PRRequester")
+  purchaseRequestsApproved PurchaseRequest[]       @relation("PRApprover")
+  purchaseOrdersCreated    PurchaseOrder[]         @relation("POCreatedBy")
+  purchaseOrderDeliveries  PurchaseOrderDelivery[] @relation("PODeliveryRecordedBy")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Department {
+  id        String       @id @default(uuid())
+  code      String?      @unique
+  name      String       @unique
+  parentId  String?
+  parent    Department?  @relation("DeptParent", fields: [parentId], references: [id])
+  children  Department[] @relation("DeptParent")
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+
+  users            User[]
+  heads            DepartmentHead[]
+  costCenters      CostCenter[]
+  budgets          Budget[]
+  expenses         Expense[]
+  purchaseRequests PurchaseRequest[]
+  purchaseOrders   PurchaseOrder[]
+}
+
+// A named head under a department. One department can have multiple heads;
+// budgets and expenses can be attributed to a specific head. Optionally
+// linked to a real user account.
+model DepartmentHead {
+  id           String     @id @default(uuid())
+  name         String
+  departmentId String
+  department   Department @relation(fields: [departmentId], references: [id])
+  userId       String?
+  user         User?      @relation(fields: [userId], references: [id])
+  isActive     Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+
+  budgets  Budget[]
+  expenses Expense[]
+
+  @@unique([departmentId, name])
+}
+
+model CostCenter {
+  id           String      @id @default(uuid())
+  name         String
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  isActive     Boolean     @default(true)
+
+  purchaseRequests PurchaseRequest[]
+
+  @@unique([name, departmentId])
+}
+
+model FinancialYear {
+  id        String   @id @default(uuid())
+  label     String   @unique
+  startDate DateTime
+  endDate   DateTime
+  isActive  Boolean  @default(true)
+
+  budgets  Budget[]
+  expenses Expense[]
+}
+
+model AccountsCategory {
+  id           String  @id @default(uuid())
+  code         String  @unique
+  label        String
+  budgetAmount Float   @default(0)
+  isActive     Boolean @default(true)
+
+  expenses Expense[]
+}
+
+model Budget {
+  id             String          @id @default(uuid())
+  departmentId   String
+  department     Department      @relation(fields: [departmentId], references: [id])
+  deptHeadId     String?
+  deptHead       DepartmentHead? @relation(fields: [deptHeadId], references: [id])
+  fyId           String
+  financialYear  FinancialYear   @relation(fields: [fyId], references: [id])
+  annualAmount   Float
+  monthlyAmounts Json
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  revisions BudgetRevision[]
+
+  // NOTE: deptHeadId is nullable, so Postgres allows multiple rows with a null
+  // head for the same dept+fy — route code enforces that case explicitly.
+  @@unique([departmentId, deptHeadId, fyId])
+}
+
+model BudgetRevision {
+  id        String   @id @default(uuid())
+  budgetId  String
+  budget    Budget   @relation(fields: [budgetId], references: [id])
+  version   Int
+  oldAmount Float
+  newAmount Float
+  reason    String
+  revisedBy String
+  revisedAt DateTime @default(now())
+}
+
+model Vendor {
+  id            String   @id @default(uuid())
+  name          String
+  gstNo         String?
+  pan           String?
+  bankAccountNo String?
+  bankIfsc      String?
+  bankName      String?
+  contactPerson String?
+  email         String?
+  phone         String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  expenses       Expense[]
+  purchaseOrders PurchaseOrder[]
+}
+
+model Expense {
+  id           String           @id @default(uuid())
+  userId       String
+  user         User             @relation("ExpenseSubmitter", fields: [userId], references: [id])
+  departmentId String
+  department   Department       @relation(fields: [departmentId], references: [id])
+  deptHeadId   String?
+  deptHead     DepartmentHead?  @relation(fields: [deptHeadId], references: [id])
+  vendorId     String?
+  vendor       Vendor?          @relation(fields: [vendorId], references: [id])
+  categoryId   String
+  category     AccountsCategory @relation(fields: [categoryId], references: [id])
+
+  status ExpenseStatus @default(SUBMITTED)
+
+  invoiceNo      String?
+  invoiceDate    DateTime
+  amount         Float
+  currency       String      @default("INR")
+  gstAmount      Float?
+  paymentMode    PaymentMode
+  paymentDetails String?
+  description    String?
+  companyTag     String?
+
+  fyId          String
+  financialYear FinancialYear @relation(fields: [fyId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attachments   ExpenseAttachment[]
+  purchaseOrder PurchaseOrder?
+}
+
+model ExpenseAttachment {
+  id         String   @id @default(uuid())
+  expenseId  String
+  expense    Expense  @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  filePath   String
+  fileType   String
+  fileName   String
+  uploadedAt DateTime @default(now())
+}
+
+// One-time email verification codes for the forgot-password flow. Only the
+// bcrypt hash of the 6-digit code is stored; delivery goes through lib/mailer
+// (blackboxed — SendGrid integration comes later).
+model PasswordResetCode {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  message   String
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id])
+  action     String
+  entityType String
+  entityId   String?
+  oldValue   Json?
+  newValue   Json?
+  ip         String?
+  timestamp  DateTime @default(now())
+}
+
+model PurchaseRequest {
+  id              String                @id @default(uuid())
+  requestedById   String
+  requestedBy     User                  @relation("PRRequester", fields: [requestedById], references: [id])
+  departmentId    String
+  department      Department            @relation(fields: [departmentId], references: [id])
+  costCenterId    String?
+  costCenter      CostCenter?           @relation(fields: [costCenterId], references: [id])
+  title           String
+  justification   String?
+  estimatedAmount Float
+  status          PurchaseRequestStatus @default(DRAFT)
+  approverId      String?
+  approver        User?                 @relation("PRApprover", fields: [approverId], references: [id])
+  approvedAt      DateTime?
+  comments        String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  items          PurchaseRequestItem[]
+  purchaseOrders PurchaseOrder[]
+}
+
+model PurchaseRequestItem {
+  id                String          @id @default(uuid())
+  purchaseRequestId String
+  purchaseRequest   PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade)
+  description       String
+  quantity          Float           @default(1)
+  estimatedUnitCost Float
+}
+
+model PurchaseOrder {
+  id                String              @id @default(uuid())
+  poNumber          String              @unique
+  purchaseRequestId String?
+  purchaseRequest   PurchaseRequest?    @relation(fields: [purchaseRequestId], references: [id])
+  vendorId          String
+  vendor            Vendor              @relation(fields: [vendorId], references: [id])
+  departmentId      String
+  department        Department          @relation(fields: [departmentId], references: [id])
+  amount            Float
+  status            PurchaseOrderStatus @default(DRAFT)
+  quotationFilePath String?
+  quotationFileName String?
+  invoiceExpenseId  String?             @unique
+  invoiceExpense    Expense?            @relation(fields: [invoiceExpenseId], references: [id])
+  createdById       String
+  createdBy         User                @relation("POCreatedBy", fields: [createdById], references: [id])
+  issuedAt          DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  deliveries PurchaseOrderDelivery[]
+}
+
+model PurchaseOrderDelivery {
+  id              String        @id @default(uuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  deliveredAmount Float
+  note            String?
+  deliveredAt     DateTime      @default(now())
+  recordedById    String
+  recordedBy      User          @relation("PODeliveryRecordedBy", fields: [recordedById], references: [id])
+}

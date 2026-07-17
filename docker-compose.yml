@@ -1,0 +1,32 @@
+# Local development infrastructure for exp-track.
+# Brings up the PostgreSQL database the backend expects (matches backend/.env DATABASE_URL).
+#
+#   docker compose up -d        # start Postgres in the background
+#   docker compose ps           # see status
+#   docker compose logs -f db   # follow logs
+#   docker compose down         # stop (data is kept in the named volume)
+#   docker compose down -v      # stop AND delete all data (fresh start)
+#
+# After first start, from backend/:  npx prisma migrate deploy && npm run prisma:seed
+
+services:
+  db:
+    image: postgres:16
+    container_name: exptrack-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: exptrack
+      POSTGRES_PASSWORD: exptrack_dev_pw
+      POSTGRES_DB: exptrack_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - exptrack_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U exptrack -d exptrack_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  exptrack_pgdata:
