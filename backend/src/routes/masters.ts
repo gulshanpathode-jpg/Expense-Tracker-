@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { writeAudit } from '../lib/audit';
+import { passwordSchema } from '../lib/password';
 
 const router = Router();
 router.use(requireAuth);
@@ -34,7 +35,8 @@ const departmentCreateSchema = z.object({
   name: z.string().min(1),
   code: z.string().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
-  heads: z.array(z.string().min(1)).optional(),
+  // At least one head is required for every department.
+  heads: z.array(z.string().min(1)).min(1, 'At least one department head is required'),
 });
 
 router.post('/departments', requireRole('ADMIN'), async (req, res) => {
@@ -42,7 +44,10 @@ router.post('/departments', requireRole('ADMIN'), async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const { name, code, parentId, heads } = parsed.data;
 
-  const headNames = [...new Set((heads ?? []).map((h) => h.trim()).filter(Boolean))];
+  const headNames = [...new Set(heads.map((h) => h.trim()).filter(Boolean))];
+  if (headNames.length === 0) {
+    return res.status(400).json({ error: 'At least one department head is required' });
+  }
   const dept = await prisma.department.create({
     data: {
       code: code || null,
@@ -230,45 +235,87 @@ router.post('/financial-years', requireRole('ADMIN'), async (req, res) => {
   res.status(201).json(fy);
 });
 
-router.get('/users', requireRole('ADMIN', 'ACCOUNTS', 'DEPARTMENT_HEAD', 'MANAGER'), async (req, res) => {
-  const user = req.user!;
-  const scoped = user.role === 'DEPARTMENT_HEAD' || user.role === 'MANAGER';
+// User administration is admin-only.
+router.get('/users', requireRole('ADMIN'), async (_req, res) => {
   res.json(
     await prisma.user.findMany({
-      where: scoped ? { departmentId: user.departmentId ?? undefined } : undefined,
-      select: { id: true, name: true, email: true, role: true, departmentId: true, managerId: true, isActive: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        departmentId: true,
+        managerId: true,
+        isActive: true,
+        headOf: { where: { isActive: true }, select: { id: true, name: true, departmentId: true } },
+      },
       orderBy: { name: 'asc' },
     })
   );
 });
 
+// The app now uses three roles; MANAGER/ACCOUNTS remain in the DB enum for
+// legacy rows but can't be assigned to new users.
 const userCreateSchema = z.object({
   name: z.string().min(1),
   email: z.string().email(),
-  password: z.string().min(8, 'Password must be at least 8 characters'),
-  role: z.enum(['ADMIN', 'DEPARTMENT_HEAD', 'MANAGER', 'ACCOUNTS', 'EMPLOYEE']).default('EMPLOYEE'),
+  password: passwordSchema,
+  role: z.enum(['ADMIN', 'DEPARTMENT_HEAD', 'EMPLOYEE']).default('EMPLOYEE'),
   departmentId: z.string().uuid().optional().nullable(),
-  managerId: z.string().uuid().optional().nullable(),
+  // For DEPARTMENT_HEAD users: the existing head record to link them to.
+  deptHeadId: z.string().uuid().optional().nullable(),
 });
 
 router.post('/users', requireRole('ADMIN'), async (req, res) => {
   const parsed = userCreateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  const { password, ...data } = parsed.data;
+  const { password, deptHeadId, ...data } = parsed.data;
+
+  // Enforce a single admin account.
+  if (data.role === 'ADMIN') {
+    const adminExists = await prisma.user.findFirst({ where: { role: 'ADMIN', isActive: true } });
+    if (adminExists) {
+      return res.status(409).json({ error: 'An admin already exists. There can only be one admin.' });
+    }
+  }
+
+  // Every non-admin user belongs to a department.
+  if (data.role === 'EMPLOYEE' && !data.departmentId) {
+    return res.status(400).json({ error: 'Employees must belong to a department' });
+  }
+
+  // Department heads must be linked to a head record in their department.
+  let headToLink: { id: string } | null = null;
+  if (data.role === 'DEPARTMENT_HEAD') {
+    if (!data.departmentId) return res.status(400).json({ error: 'Department heads must belong to a department' });
+    if (!deptHeadId) return res.status(400).json({ error: 'Select which department head this user is' });
+    const head = await prisma.departmentHead.findUnique({ where: { id: deptHeadId } });
+    if (!head || head.departmentId !== data.departmentId) {
+      return res.status(400).json({ error: 'Selected head does not belong to the chosen department' });
+    }
+    if (head.userId) return res.status(409).json({ error: 'That head is already linked to a user' });
+    headToLink = { id: head.id };
+  }
 
   const exists = await prisma.user.findUnique({ where: { email: data.email } });
   if (exists) return res.status(409).json({ error: 'A user with this email already exists' });
 
   const passwordHash = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { ...data, departmentId: data.departmentId || null, managerId: data.managerId || null, passwordHash },
+    data: { ...data, departmentId: data.departmentId || null, passwordHash },
     select: { id: true, name: true, email: true, role: true, departmentId: true, managerId: true, isActive: true },
   });
+  if (headToLink) {
+    await prisma.departmentHead.update({ where: { id: headToLink.id }, data: { userId: user.id } });
+  }
   await writeAudit(req.user!.sub, 'CREATE', 'User', user.id, undefined, user, req.ip);
   res.status(201).json(user);
 });
 
-const userUpdateSchema = userCreateSchema.omit({ password: true, email: true }).partial().extend({
+const userUpdateSchema = z.object({
+  name: z.string().min(1).optional(),
+  role: z.enum(['ADMIN', 'DEPARTMENT_HEAD', 'EMPLOYEE']).optional(),
+  departmentId: z.string().uuid().optional().nullable(),
   isActive: z.boolean().optional(),
 });
 
@@ -278,6 +325,18 @@ router.put('/users/:id', requireRole('ADMIN'), async (req, res) => {
 
   const existing = await prisma.user.findUnique({ where: { id: String(req.params.id) } });
   if (!existing) return res.status(404).json({ error: 'User not found' });
+
+  // Never leave the system without an active admin.
+  const losingAdmin =
+    existing.role === 'ADMIN' && (parsed.data.isActive === false || (parsed.data.role && parsed.data.role !== 'ADMIN'));
+  if (losingAdmin) {
+    const otherAdmins = await prisma.user.count({
+      where: { role: 'ADMIN', isActive: true, id: { not: existing.id } },
+    });
+    if (otherAdmins === 0) {
+      return res.status(400).json({ error: 'Cannot remove the only admin account' });
+    }
+  }
 
   const user = await prisma.user.update({
     where: { id: existing.id },
@@ -296,8 +355,8 @@ router.put('/users/:id', requireRole('ADMIN'), async (req, res) => {
 
 router.post('/users/:id/reset-password', requireRole('ADMIN'), async (req, res) => {
   const { newPassword } = req.body ?? {};
-  if (typeof newPassword !== 'string' || newPassword.length < 8) {
-    return res.status(400).json({ error: 'newPassword must be at least 8 characters' });
+  if (typeof newPassword !== 'string' || !/^(?=.*[A-Za-z])(?=.*\d).{8,}$/.test(newPassword)) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters and include a letter and a number' });
   }
 
   const existing = await prisma.user.findUnique({ where: { id: String(req.params.id) } });

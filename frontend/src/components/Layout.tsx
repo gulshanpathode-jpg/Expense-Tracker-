@@ -4,7 +4,6 @@ import {
   LayoutDashboard,
   ReceiptText,
   CirclePlus,
-  ShoppingCart,
   FileBarChart,
   ScrollText,
   Settings2,
@@ -20,7 +19,8 @@ import NotificationBell from './NotificationBell';
 import { Avatar } from './ui';
 import { titleCase } from '../lib/format';
 
-const ALL_ROLES = ['ADMIN', 'DEPARTMENT_HEAD', 'MANAGER', 'ACCOUNTS', 'EMPLOYEE'];
+const ALL_ROLES = ['ADMIN', 'DEPARTMENT_HEAD', 'EMPLOYEE'];
+const STAFF = ['ADMIN', 'DEPARTMENT_HEAD']; // roles with reporting/dashboard access
 
 const navSections: {
   heading: string | null;
@@ -28,29 +28,19 @@ const navSections: {
 }[] = [
   {
     heading: null,
-    items: [{ to: '/', label: 'Dashboard', end: true, roles: ALL_ROLES, icon: LayoutDashboard }],
+    items: [{ to: '/', label: 'Dashboard', end: true, roles: STAFF, icon: LayoutDashboard }],
   },
   {
     heading: 'Spend',
     items: [
       { to: '/expenses', label: 'Expenses', end: true, roles: ALL_ROLES, icon: ReceiptText },
-      {
-        to: '/expenses/new',
-        label: 'Add Expense',
-        end: true,
-        roles: ['ADMIN', 'DEPARTMENT_HEAD', 'MANAGER', 'EMPLOYEE'],
-        icon: CirclePlus,
-      },
+      { to: '/expenses/new', label: 'Add Expense', end: true, roles: ALL_ROLES, icon: CirclePlus },
     ],
-  },
-  {
-    heading: 'Procurement',
-    items: [{ to: '/purchases', label: 'Purchases', end: false, roles: ALL_ROLES, icon: ShoppingCart }],
   },
   {
     heading: 'Insights',
     items: [
-      { to: '/reports', label: 'Reports', end: true, roles: ['ADMIN', 'ACCOUNTS'], icon: FileBarChart },
+      { to: '/reports', label: 'Reports', end: true, roles: STAFF, icon: FileBarChart },
       { to: '/admin/audit-log', label: 'Audit Log', end: true, roles: ['ADMIN'], icon: ScrollText },
       { to: '/admin/masters', label: 'Admin Setup', end: true, roles: ['ADMIN'], icon: Settings2 },
     ],

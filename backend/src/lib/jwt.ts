@@ -8,6 +8,10 @@ export interface AccessTokenPayload {
   sub: string;
   role: string;
   departmentId: string | null;
+  // Set for DEPARTMENT_HEAD users linked to a specific DepartmentHead record;
+  // scopes their view/actions to that single head-slice. Null for department-
+  // level heads (dept has no named head) and all other roles.
+  deptHeadId: string | null;
 }
 
 export function signAccessToken(payload: AccessTokenPayload) {

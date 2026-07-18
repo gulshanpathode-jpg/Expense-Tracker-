@@ -13,32 +13,32 @@ const FEATURES = [
   {
     icon: ReceiptText,
     title: 'Every bill, in one place',
-    text: 'Attach invoices and receipts to each expense so approvers always see the proof.',
+    text: 'Attach invoices and receipts to each expense so nothing goes unaccounted.',
   },
   {
     icon: GitBranch,
-    title: 'Approvals that route themselves',
-    text: 'Every expense goes to your manager, then to the department head.',
+    title: 'Accountability by head',
+    text: 'Each department head tracks the spend and budget for their own slice.',
   },
   {
     icon: Wallet,
     title: 'Budgets kept up to date',
-    text: 'Annual budgets split across heads, and utilisation updates on approval.',
+    text: 'Annual budgets split across heads, with utilisation updated on every expense.',
   },
 ];
 
+const DEMO_PASSWORD = 'Dhaninfo@2026';
+
 const DEMO_ACCOUNTS = [
-  { label: 'Admin', email: 'admin@exptrack.local' },
-  { label: 'Dept Head', email: 'depthead@exptrack.local' },
-  { label: 'Manager', email: 'manager@exptrack.local' },
-  { label: 'Employee', email: 'employee@exptrack.local' },
-  { label: 'Accounts', email: 'accounts@exptrack.local' },
+  { label: 'Admin', email: 'admin@dhaninfo.biz' },
+  { label: 'Dept Head', email: 'vikas@dhaninfo.biz' },
+  { label: 'Employee', email: 'employee@dhaninfo.biz' },
 ];
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const setSession = useAuthStore((s) => s.setSession);
-  const [email, setEmail] = useState('admin@exptrack.local');
+  const [email, setEmail] = useState('admin@dhaninfo.biz');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -386,7 +386,7 @@ export default function LoginPage() {
                 type="button"
                 onClick={() => {
                   setEmail(a.email);
-                  setPassword('Passw0rd!');
+                  setPassword(DEMO_PASSWORD);
                   setErrors({});
                 }}
                 className={

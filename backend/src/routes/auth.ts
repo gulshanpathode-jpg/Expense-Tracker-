@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../lib/jwt';
 import { requireAuth } from '../middleware/auth';
 import { sendPasswordResetCode } from '../lib/mailer';
+import { passwordSchema } from '../lib/password';
 
 const router = Router();
 
@@ -52,6 +53,20 @@ async function issueRefreshToken(userId: string): Promise<string> {
   return token;
 }
 
+// Builds the access-token claims for a user, resolving the DepartmentHead they
+// are linked to (if any) so the token can scope them to a single head-slice.
+async function buildAccessClaims(user: { id: string; role: string; departmentId: string | null }) {
+  let deptHeadId: string | null = null;
+  if (user.role === 'DEPARTMENT_HEAD') {
+    const head = await prisma.departmentHead.findFirst({
+      where: { userId: user.id, isActive: true },
+      select: { id: true },
+    });
+    deptHeadId = head?.id ?? null;
+  }
+  return { sub: user.id, role: user.role, departmentId: user.departmentId, deptHeadId };
+}
+
 router.post('/login', async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Invalid credentials payload' });
@@ -67,13 +82,21 @@ router.post('/login', async (req, res) => {
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) return res.status(401).json({ error: 'Invalid email or password' });
 
-  const accessToken = signAccessToken({ sub: user.id, role: user.role, departmentId: user.departmentId });
+  const claims = await buildAccessClaims(user);
+  const accessToken = signAccessToken(claims);
   const refreshToken = await issueRefreshToken(user.id);
 
   res.json({
     accessToken,
     refreshToken,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role, departmentId: user.departmentId },
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      departmentId: user.departmentId,
+      deptHeadId: claims.deptHeadId,
+    },
   });
 });
 
@@ -95,7 +118,7 @@ router.post('/refresh', async (req, res) => {
     await prisma.refreshToken.update({ where: { id: stored.id }, data: { revokedAt: new Date() } });
     const newRefreshToken = await issueRefreshToken(user.id);
 
-    const accessToken = signAccessToken({ sub: user.id, role: user.role, departmentId: user.departmentId });
+    const accessToken = signAccessToken(await buildAccessClaims(user));
     res.json({ accessToken, refreshToken: newRefreshToken });
   } catch {
     res.status(401).json({ error: 'Invalid or expired refresh token' });
@@ -115,7 +138,7 @@ router.post('/logout', async (req, res) => {
 
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z.string().min(8, 'New password must be at least 8 characters'),
+  newPassword: passwordSchema,
 });
 
 router.post('/change-password', requireAuth, async (req, res) => {
@@ -178,7 +201,7 @@ router.post('/forgot-password', async (req, res) => {
 const resetPasswordSchema = z.object({
   email: z.string().email(),
   code: z.string().regex(/^\d{6}$/, 'Code must be 6 digits'),
-  newPassword: z.string().min(8, 'New password must be at least 8 characters'),
+  newPassword: passwordSchema,
 });
 
 router.post('/reset-password', async (req, res) => {
@@ -219,10 +242,19 @@ router.post('/reset-password', async (req, res) => {
 router.get('/me', requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.user!.sub },
-    select: { id: true, name: true, email: true, role: true, departmentId: true, department: true },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      departmentId: true,
+      department: true,
+      headOf: { where: { isActive: true }, select: { id: true, name: true, departmentId: true } },
+    },
   });
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json(user);
+  const head = user.headOf[0] ?? null;
+  res.json({ ...user, deptHeadId: head?.id ?? null, headName: head?.name ?? null });
 });
 
 export default router;

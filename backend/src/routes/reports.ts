@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { sendExport } from '../lib/exporter';
+import { sendExport, ReportColumn, ReportMeta } from '../lib/exporter';
 
 const router = Router();
-// Company-wide reporting is for Admin and Accounts only (matches the frontend nav).
-router.use(requireAuth, requireRole('ADMIN', 'ACCOUNTS'));
+// Reporting is available to Admin (company-wide) and Department Heads (scoped to
+// their own head-slice). Employees have no reports.
+router.use(requireAuth, requireRole('ADMIN', 'DEPARTMENT_HEAD'));
 
 async function periodBounds(period: string | undefined, from?: string, to?: string) {
   if (from || to) {
@@ -31,54 +32,92 @@ async function periodBounds(period: string | undefined, from?: string, to?: stri
   return { gte: new Date(now.getFullYear(), now.getMonth(), 1), lte: now };
 }
 
-// Department-wise expense report
+// Head-slice scope: department heads only ever report on their own slice.
+type Scope = { where: Record<string, unknown>; label: string };
+async function scopeFor(user: { role: string; departmentId: string | null; deptHeadId?: string | null }): Promise<Scope> {
+  if (user.role !== 'DEPARTMENT_HEAD') return { where: {}, label: 'All departments' };
+  if (user.deptHeadId) {
+    const head = await prisma.departmentHead.findUnique({
+      where: { id: user.deptHeadId },
+      include: { department: true },
+    });
+    return {
+      where: { deptHeadId: user.deptHeadId },
+      label: head ? `${head.department.name} — ${head.name}` : 'My head-slice',
+    };
+  }
+  const dept = user.departmentId ? await prisma.department.findUnique({ where: { id: user.departmentId } }) : null;
+  return { where: { departmentId: user.departmentId ?? '__none__' }, label: dept ? dept.name : 'My department' };
+}
+
+function periodLabel(period: string | undefined, from?: string, to?: string): string {
+  if (from || to) return `Period: ${from ?? '…'} to ${to ?? '…'}`;
+  if (period === 'quarterly') return 'Period: This quarter';
+  if (period === 'yearly') return 'Period: This financial year';
+  if (period === 'monthly') return 'Period: This month';
+  return 'Period: All time';
+}
+
+// Department-wise expense report (a detailed expense register).
 router.get('/department-wise', async (req, res) => {
   const { period, from, to, format } = req.query;
+  const scope = await scopeFor(req.user!);
   const invoiceDate = await periodBounds(String(period ?? ''), from as string, to as string);
 
   const rows = await prisma.expense.findMany({
-    where: { invoiceDate, status: 'SUBMITTED' },
+    where: { ...scope.where, invoiceDate, status: 'SUBMITTED' },
     include: { department: true, deptHead: true, category: true, vendor: true, user: { select: { name: true } } },
-    orderBy: { invoiceDate: 'desc' },
+    orderBy: [{ department: { name: 'asc' } }, { invoiceDate: 'desc' }],
   });
 
   const data = rows.map((e) => ({
     date: e.invoiceDate.toISOString().slice(0, 10),
-    department: e.department.code ? `${e.department.code} - ${e.department.name}` : e.department.name,
-    departmentHead: e.deptHead?.name ?? '',
+    department: e.department.name,
+    departmentHead: e.deptHead?.name ?? '—',
     category: e.category.label,
-    vendor: e.vendor?.name ?? '',
+    vendor: e.vendor?.name ?? '—',
+    invoiceNo: e.invoiceNo ?? '—',
     submittedBy: e.user.name,
-    currency: e.currency,
     amount: e.amount,
     gstAmount: e.gstAmount ?? 0,
   }));
 
-  await sendExport(
-    res,
-    format as string,
-    'department-wise-report',
-    [
-      { header: 'Date', key: 'date' },
-      { header: 'Department', key: 'department', width: 30 },
-      { header: 'Department Head', key: 'departmentHead', width: 20 },
-      { header: 'Category', key: 'category', width: 20 },
-      { header: 'Vendor', key: 'vendor', width: 24 },
-      { header: 'Submitted By', key: 'submittedBy', width: 20 },
-      { header: 'Currency', key: 'currency', width: 10 },
-      { header: 'Amount', key: 'amount' },
-      { header: 'GST Amount', key: 'gstAmount' },
-    ],
-    data,
-  );
+  const columns: ReportColumn[] = [
+    { header: 'Date', key: 'date', width: 12, type: 'date' },
+    { header: 'Department', key: 'department', width: 24 },
+    { header: 'Head', key: 'departmentHead', width: 16 },
+    { header: 'Category', key: 'category', width: 26 },
+    { header: 'Vendor', key: 'vendor', width: 22 },
+    { header: 'Invoice No', key: 'invoiceNo', width: 14 },
+    { header: 'Submitted By', key: 'submittedBy', width: 18 },
+    { header: 'Amount', key: 'amount', width: 16, type: 'money' },
+    { header: 'GST Amount', key: 'gstAmount', width: 14, type: 'money' },
+  ];
+
+  const meta: ReportMeta = {
+    title: 'Department-wise Expense Report',
+    subtitle: `${scope.label}   •   ${periodLabel(String(period ?? ''), from as string, to as string)}   •   ${rows.length} expense(s)`,
+    totals: {
+      amount: data.reduce((s, r) => s + r.amount, 0),
+      gstAmount: data.reduce((s, r) => s + r.gstAmount, 0),
+    },
+  };
+
+  await sendExport(res, format as string, 'department-wise-report', columns, data, meta);
 });
 
-// Budget utilization report: department allocation vs recorded spend.
+// Budget utilization report: allocation vs recorded spend per budget line.
 router.get('/budget-utilization', async (req, res) => {
   const { fyId, format } = req.query;
+  const user = req.user!;
+  const headWhere = user.role === 'DEPARTMENT_HEAD' && user.deptHeadId ? { deptHeadId: user.deptHeadId } : {};
+  const deptWhere =
+    user.role === 'DEPARTMENT_HEAD' && !user.deptHeadId ? { departmentId: user.departmentId ?? '__none__' } : {};
+
   const budgets = await prisma.budget.findMany({
-    where: { fyId: fyId ? String(fyId) : undefined },
-    include: { department: true, deptHead: true },
+    where: { fyId: fyId ? String(fyId) : undefined, ...headWhere, ...deptWhere },
+    include: { department: true, deptHead: true, financialYear: true },
+    orderBy: { annualAmount: 'desc' },
   });
 
   const data = await Promise.all(
@@ -91,10 +130,13 @@ router.get('/budget-utilization', async (req, res) => {
           ...(b.deptHeadId ? { deptHeadId: b.deptHeadId } : {}),
         },
         _sum: { amount: true },
+        _count: true,
       });
       const utilized = spent._sum.amount ?? 0;
       return {
-        department: b.deptHead ? `${b.department.name} – ${b.deptHead.name}` : b.department.name,
+        department: b.department.name,
+        head: b.deptHead?.name ?? '—',
+        expenseCount: spent._count,
         allocated: b.annualAmount,
         utilized,
         remaining: b.annualAmount - utilized,
@@ -103,165 +145,254 @@ router.get('/budget-utilization', async (req, res) => {
     }),
   );
 
-  await sendExport(
-    res,
-    format as string,
-    'budget-utilization-report',
-    [
-      { header: 'Department', key: 'department', width: 30 },
-      { header: 'Allocated', key: 'allocated' },
-      { header: 'Utilized', key: 'utilized' },
-      { header: 'Remaining', key: 'remaining' },
-      { header: 'Utilization %', key: 'utilizationPct' },
-    ],
-    data,
-  );
+  const columns: ReportColumn[] = [
+    { header: 'Department', key: 'department', width: 24 },
+    { header: 'Head', key: 'head', width: 18 },
+    { header: 'Expenses', key: 'expenseCount', width: 10, type: 'number' },
+    { header: 'Allocated', key: 'allocated', width: 16, type: 'money' },
+    { header: 'Utilized', key: 'utilized', width: 16, type: 'money' },
+    { header: 'Remaining', key: 'remaining', width: 16, type: 'money' },
+    { header: 'Utilization %', key: 'utilizationPct', width: 14, type: 'percent' },
+  ];
+
+  const scope = await scopeFor(user);
+  const totalAlloc = data.reduce((s, r) => s + r.allocated, 0);
+  const totalUsed = data.reduce((s, r) => s + r.utilized, 0);
+  const meta: ReportMeta = {
+    title: 'Budget Utilization Report',
+    subtitle: `${scope.label}   •   ${budgets.length} budget line(s)`,
+    totals: {
+      expenseCount: data.reduce((s, r) => s + r.expenseCount, 0),
+      allocated: totalAlloc,
+      utilized: totalUsed,
+      remaining: totalAlloc - totalUsed,
+      utilizationPct: totalAlloc > 0 ? Number(((totalUsed / totalAlloc) * 100).toFixed(1)) : 0,
+    },
+  };
+
+  await sendExport(res, format as string, 'budget-utilization-report', columns, data, meta);
 });
 
 // Category budget vs spend report.
 router.get('/category-wise', async (req, res) => {
   const { format } = req.query;
+  const scope = await scopeFor(req.user!);
+  const isHead = req.user!.role === 'DEPARTMENT_HEAD';
+
   const categories = await prisma.accountsCategory.findMany({
     where: { isActive: true },
-    include: { expenses: { where: { status: 'SUBMITTED' } } },
+    include: { expenses: { where: { status: 'SUBMITTED', ...scope.where } } },
     orderBy: { code: 'asc' },
   });
 
-  const data = categories.map((c) => {
-    const spent = c.expenses.reduce((s, e) => s + e.amount, 0);
-    return {
-      category: c.label,
-      budget: c.budgetAmount,
-      spent,
-      remaining: c.budgetAmount - spent,
-      expenseCount: c.expenses.length,
-    };
-  });
+  const data = categories
+    .map((c) => {
+      const spent = c.expenses.reduce((s, e) => s + e.amount, 0);
+      return {
+        category: c.label,
+        budget: c.budgetAmount,
+        spent,
+        remaining: c.budgetAmount - spent,
+        share: 0, // filled after we know the grand total
+        expenseCount: c.expenses.length,
+      };
+    })
+    // For a head, only categories they actually spent on are meaningful.
+    .filter((c) => (isHead ? c.spent > 0 : c.budget > 0 || c.spent > 0));
 
-  await sendExport(
-    res,
-    format as string,
-    'category-wise-report',
-    [
-      { header: 'Category', key: 'category', width: 40 },
-      { header: 'Budget', key: 'budget' },
-      { header: 'Spent', key: 'spent' },
-      { header: 'Remaining', key: 'remaining' },
-      { header: 'Expense Count', key: 'expenseCount' },
-    ],
-    data,
-  );
+  const grandSpent = data.reduce((s, r) => s + r.spent, 0);
+  data.forEach((r) => (r.share = grandSpent > 0 ? Number(((r.spent / grandSpent) * 100).toFixed(1)) : 0));
+
+  // Company category budgets are org-wide; hide the budget columns for a head
+  // (their spend against a company budget would be misleading).
+  const columns: ReportColumn[] = isHead
+    ? [
+        { header: 'Category', key: 'category', width: 34 },
+        { header: 'Spent', key: 'spent', width: 16, type: 'money' },
+        { header: 'Share of My Spend %', key: 'share', width: 18, type: 'percent' },
+        { header: 'Expenses', key: 'expenseCount', width: 10, type: 'number' },
+      ]
+    : [
+        { header: 'Category', key: 'category', width: 34 },
+        { header: 'Budget', key: 'budget', width: 16, type: 'money' },
+        { header: 'Spent', key: 'spent', width: 16, type: 'money' },
+        { header: 'Remaining', key: 'remaining', width: 16, type: 'money' },
+        { header: 'Share of Spend %', key: 'share', width: 16, type: 'percent' },
+        { header: 'Expenses', key: 'expenseCount', width: 10, type: 'number' },
+      ];
+
+  const meta: ReportMeta = {
+    title: 'Category Budget Report',
+    subtitle: `${scope.label}   •   ${data.length} category(ies)`,
+    totals: isHead
+      ? { spent: grandSpent, share: 100, expenseCount: data.reduce((s, r) => s + r.expenseCount, 0) }
+      : {
+          budget: data.reduce((s, r) => s + r.budget, 0),
+          spent: grandSpent,
+          remaining: data.reduce((s, r) => s + r.remaining, 0),
+          share: 100,
+          expenseCount: data.reduce((s, r) => s + r.expenseCount, 0),
+        },
+  };
+
+  await sendExport(res, format as string, 'category-wise-report', columns, data, meta);
 });
 
-// Vendor spending report
+// Vendor spending report.
 router.get('/vendor-spend', async (req, res) => {
   const { format } = req.query;
+  const scope = await scopeFor(req.user!);
+
   const vendors = await prisma.vendor.findMany({
-    include: { expenses: { where: { status: 'SUBMITTED' } } },
+    include: { expenses: { where: { status: 'SUBMITTED', ...scope.where } } },
   });
 
   const data = vendors
-    .map((v) => ({
-      vendor: v.name,
-      gstNo: v.gstNo ?? '',
-      totalSpend: v.expenses.reduce((s, e) => s + e.amount, 0),
-      expenseCount: v.expenses.length,
-      lastPaymentDate: v.expenses.length
-        ? v.expenses.reduce((max, e) => (e.invoiceDate > max ? e.invoiceDate : max), v.expenses[0].invoiceDate).toISOString().slice(0, 10)
-        : '',
-    }))
+    .map((v) => {
+      const total = v.expenses.reduce((s, e) => s + e.amount, 0);
+      return {
+        vendor: v.name,
+        gstNo: v.gstNo ?? '—',
+        totalSpend: total,
+        expenseCount: v.expenses.length,
+        avgSpend: v.expenses.length ? Number((total / v.expenses.length).toFixed(2)) : 0,
+        lastPaymentDate: v.expenses.length
+          ? v.expenses
+              .reduce((max, e) => (e.invoiceDate > max ? e.invoiceDate : max), v.expenses[0].invoiceDate)
+              .toISOString()
+              .slice(0, 10)
+          : '',
+      };
+    })
     .filter((v) => v.expenseCount > 0)
     .sort((a, b) => b.totalSpend - a.totalSpend);
 
-  await sendExport(
-    res,
-    format as string,
-    'vendor-spend-report',
-    [
-      { header: 'Vendor', key: 'vendor', width: 28 },
-      { header: 'GST No', key: 'gstNo', width: 18 },
-      { header: 'Total Spend', key: 'totalSpend' },
-      { header: 'Expense Count', key: 'expenseCount' },
-      { header: 'Last Payment Date', key: 'lastPaymentDate' },
-    ],
-    data,
-  );
+  const columns: ReportColumn[] = [
+    { header: 'Vendor', key: 'vendor', width: 26 },
+    { header: 'GST No', key: 'gstNo', width: 18 },
+    { header: 'Total Spend', key: 'totalSpend', width: 16, type: 'money' },
+    { header: 'Expenses', key: 'expenseCount', width: 10, type: 'number' },
+    { header: 'Avg / Expense', key: 'avgSpend', width: 16, type: 'money' },
+    { header: 'Last Payment', key: 'lastPaymentDate', width: 14, type: 'date' },
+  ];
+
+  const meta: ReportMeta = {
+    title: 'Vendor Spending Report',
+    subtitle: `${scope.label}   •   ${data.length} vendor(s)`,
+    totals: {
+      totalSpend: data.reduce((s, r) => s + r.totalSpend, 0),
+      expenseCount: data.reduce((s, r) => s + r.expenseCount, 0),
+    },
+  };
+
+  await sendExport(res, format as string, 'vendor-spend-report', columns, data, meta);
 });
 
-// GST report
-router.get('/gst', async (req, res) => {
-  const { period, from, to, format } = req.query;
-  const invoiceDate = await periodBounds(String(period ?? ''), from as string, to as string);
-
-  const rows = await prisma.expense.findMany({
-    where: { invoiceDate, gstAmount: { not: null }, status: 'SUBMITTED' },
-    include: { vendor: true, department: true },
-    orderBy: { invoiceDate: 'desc' },
-  });
-
-  const data = rows.map((e) => ({
-    date: e.invoiceDate.toISOString().slice(0, 10),
-    invoiceNo: e.invoiceNo ?? '',
-    vendor: e.vendor?.name ?? '',
-    vendorGstNo: e.vendor?.gstNo ?? '',
-    department: e.department.name,
-    currency: e.currency,
-    amount: e.amount,
-    gstAmount: e.gstAmount ?? 0,
-  }));
-
-  await sendExport(
-    res,
-    format as string,
-    'gst-report',
-    [
-      { header: 'Date', key: 'date' },
-      { header: 'Invoice No', key: 'invoiceNo', width: 18 },
-      { header: 'Vendor', key: 'vendor', width: 24 },
-      { header: 'Vendor GST No', key: 'vendorGstNo', width: 20 },
-      { header: 'Department', key: 'department', width: 24 },
-      { header: 'Currency', key: 'currency', width: 10 },
-      { header: 'Amount', key: 'amount' },
-      { header: 'GST Amount', key: 'gstAmount' },
-    ],
-    data,
-  );
-});
-
-// Monthly/Quarterly/Yearly summary report
+// Monthly/Quarterly/Yearly summary by department (admin) or by month (head).
 router.get('/period-summary', async (req, res) => {
   const { period, from, to, format } = req.query;
+  const scope = await scopeFor(req.user!);
   const invoiceDate = await periodBounds(String(period ?? 'monthly'), from as string, to as string);
 
   const rows = await prisma.expense.groupBy({
     by: ['departmentId'],
-    where: { invoiceDate, status: 'SUBMITTED' },
+    where: { ...scope.where, invoiceDate, status: 'SUBMITTED' },
     _sum: { amount: true },
     _count: true,
     orderBy: { _sum: { amount: 'desc' } },
   });
   const depts = await prisma.department.findMany({ where: { id: { in: rows.map((r) => r.departmentId) } } });
+  const grand = rows.reduce((s, r) => s + (r._sum.amount ?? 0), 0);
 
   const data = rows.map((r) => {
     const dept = depts.find((d) => d.id === r.departmentId);
+    const spend = r._sum.amount ?? 0;
     return {
-      department: dept ? (dept.code ? `${dept.code} - ${dept.name}` : dept.name) : 'Unknown',
-      totalSpend: r._sum.amount ?? 0,
+      department: dept?.name ?? 'Unknown',
+      totalSpend: spend,
       expenseCount: r._count,
+      share: grand > 0 ? Number(((spend / grand) * 100).toFixed(1)) : 0,
     };
   });
 
-  await sendExport(
-    res,
-    format as string,
-    `${period ?? 'monthly'}-summary-report`,
-    [
-      { header: 'Department', key: 'department', width: 30 },
-      { header: 'Total Spend', key: 'totalSpend' },
-      { header: 'Expense Count', key: 'expenseCount' },
-    ],
-    data,
-  );
+  const columns: ReportColumn[] = [
+    { header: 'Department', key: 'department', width: 28 },
+    { header: 'Total Spend', key: 'totalSpend', width: 16, type: 'money' },
+    { header: 'Expenses', key: 'expenseCount', width: 10, type: 'number' },
+    { header: 'Share %', key: 'share', width: 12, type: 'percent' },
+  ];
+
+  const meta: ReportMeta = {
+    title: 'Period Summary Report',
+    subtitle: `${scope.label}   •   ${periodLabel(String(period ?? 'monthly'), from as string, to as string)}`,
+    totals: {
+      totalSpend: grand,
+      expenseCount: data.reduce((s, r) => s + r.expenseCount, 0),
+      share: data.length ? 100 : 0,
+    },
+  };
+
+  await sendExport(res, format as string, `${period ?? 'monthly'}-summary-report`, columns, data, meta);
+});
+
+// Monthly breakdown of spend (rows = months) — most useful for a single head.
+router.get('/monthly-breakdown', async (req, res) => {
+  const { fyId, format } = req.query;
+  const scope = await scopeFor(req.user!);
+
+  const fy = fyId
+    ? await prisma.financialYear.findUnique({ where: { id: String(fyId) } })
+    : await prisma.financialYear.findFirst({ where: { isActive: true }, orderBy: { startDate: 'desc' } });
+
+  const where: Record<string, unknown> = { ...scope.where, status: 'SUBMITTED' };
+  if (fy) where.invoiceDate = { gte: fy.startDate, lte: fy.endDate };
+
+  const expenses = await prisma.expense.findMany({
+    where,
+    select: { amount: true, gstAmount: true, invoiceDate: true },
+  });
+
+  const byMonth = new Map<string, { spend: number; gst: number; count: number }>();
+  for (const e of expenses) {
+    const d = new Date(e.invoiceDate);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const cur = byMonth.get(key) ?? { spend: 0, gst: 0, count: 0 };
+    cur.spend += e.amount;
+    cur.gst += e.gstAmount ?? 0;
+    cur.count += 1;
+    byMonth.set(key, cur);
+  }
+
+  const data = [...byMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, v]) => {
+      const [y, m] = month.split('-').map(Number);
+      return {
+        month: new Date(y, m - 1, 1).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }),
+        totalSpend: v.spend,
+        gstAmount: Number(v.gst.toFixed(2)),
+        expenseCount: v.count,
+      };
+    });
+
+  const columns: ReportColumn[] = [
+    { header: 'Month', key: 'month', width: 16 },
+    { header: 'Total Spend', key: 'totalSpend', width: 16, type: 'money' },
+    { header: 'GST Amount', key: 'gstAmount', width: 14, type: 'money' },
+    { header: 'Expenses', key: 'expenseCount', width: 10, type: 'number' },
+  ];
+
+  const meta: ReportMeta = {
+    title: 'Monthly Spend Breakdown',
+    subtitle: `${scope.label}   •   ${fy ? fy.label : 'All time'}`,
+    totals: {
+      totalSpend: data.reduce((s, r) => s + r.totalSpend, 0),
+      gstAmount: Number(data.reduce((s, r) => s + r.gstAmount, 0).toFixed(2)),
+      expenseCount: data.reduce((s, r) => s + r.expenseCount, 0),
+    },
+  };
+
+  await sendExport(res, format as string, 'monthly-breakdown-report', columns, data, meta);
 });
 
 export default router;

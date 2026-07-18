@@ -29,10 +29,11 @@ const expenseSchema = z.object({
 });
 
 const expenseUpdateSchema = expenseSchema
-  .omit({ vendorName: true, fyId: true })
+  .omit({ fyId: true })
   .partial()
   .extend({
     vendorId: z.string().uuid().nullable().optional().or(z.literal('')),
+    vendorName: z.string().nullable().optional(),
     invoiceNo: z.string().nullable().optional(),
     paymentDetails: z.string().nullable().optional(),
     description: z.string().nullable().optional(),
@@ -57,16 +58,32 @@ async function validateDeptHead(
 }
 
 // Can `user` see this expense? Mirrors the scoping rules of the list route.
+// Department heads are scoped to their own head-slice (deptHeadId); a head with
+// no linked head record falls back to department-level scope.
 function canViewExpense(
-  user: { sub: string; role: string; departmentId: string | null },
-  expense: { userId: string; departmentId: string }
+  user: { sub: string; role: string; departmentId: string | null; deptHeadId?: string | null },
+  expense: { userId: string; departmentId: string; deptHeadId?: string | null }
 ): boolean {
   if (user.role === 'ADMIN' || user.role === 'ACCOUNTS') return true;
   if (expense.userId === user.sub) return true;
-  if (user.role === 'MANAGER' || user.role === 'DEPARTMENT_HEAD') {
+  if (user.role === 'DEPARTMENT_HEAD') {
+    if (user.deptHeadId) return expense.deptHeadId === user.deptHeadId;
+    return !!user.departmentId && expense.departmentId === user.departmentId;
+  }
+  if (user.role === 'MANAGER') {
     return !!user.departmentId && expense.departmentId === user.departmentId;
   }
   return false;
+}
+
+// True when a department head owns this expense's head-slice (delete guard).
+function headOwnsExpense(
+  user: { role: string; departmentId: string | null; deptHeadId?: string | null },
+  expense: { departmentId: string; deptHeadId?: string | null }
+): boolean {
+  if (user.role !== 'DEPARTMENT_HEAD') return false;
+  if (user.deptHeadId) return expense.deptHeadId === user.deptHeadId;
+  return !!user.departmentId && expense.departmentId === user.departmentId;
 }
 
 async function validateInvoiceDateInFy(fyId: string, invoiceDate: Date): Promise<string | null> {
@@ -79,7 +96,7 @@ async function validateInvoiceDateInFy(fyId: string, invoiceDate: Date): Promise
 }
 
 router.get('/', async (req, res) => {
-  const { departmentId, categoryId, vendorId, from, to, mine, paymentMode, fyId, amountMin, amountMax, q, limit, status } = req.query;
+  const { departmentId, categoryId, vendorId, from, to, mine, paymentMode, fyId, amountMin, amountMax, q, status } = req.query;
   const user = req.user!;
 
   const where: any = {};
@@ -110,7 +127,14 @@ router.get('/', async (req, res) => {
     const scope = { OR: [{ userId: user.sub }, { department: { id: user.departmentId ?? undefined } }] };
     where.AND = [...(where.AND ?? []), scope];
   } else if (user.role === 'DEPARTMENT_HEAD') {
-    where.departmentId = user.departmentId ?? undefined;
+    // Heads see only their own head-slice; a head with no linked record falls
+    // back to their whole department. Plus their own drafts (handled below).
+    if (user.deptHeadId) {
+      const scope = { OR: [{ deptHeadId: user.deptHeadId }, { userId: user.sub }] };
+      where.AND = [...(where.AND ?? []), scope];
+    } else {
+      where.departmentId = user.departmentId ?? undefined;
+    }
   } else if ((user.role === 'ADMIN' || user.role === 'ACCOUNTS') && departmentId) {
     where.departmentId = String(departmentId);
   }
@@ -120,28 +144,37 @@ router.get('/', async (req, res) => {
     where.AND = [...(where.AND ?? []), { OR: [{ status: 'SUBMITTED' }, { userId: user.sub }] }];
   }
 
-  const take = Math.min(Math.max(Number(limit) || 500, 1), 2000);
-  const expenses = await prisma.expense.findMany({
-    where,
-    include: {
-      vendor: true,
-      category: true,
-      department: true,
-      deptHead: true,
-      user: { select: { id: true, name: true, email: true } },
-      attachments: true,
-    },
-    orderBy: { createdAt: 'desc' },
-    take,
-  });
-  res.json(expenses);
+  // Server-side pagination: page is 1-based, pageSize capped at 100.
+  const pageSize = Math.min(Math.max(Number(req.query.pageSize) || 25, 1), 100);
+  const page = Math.max(Number(req.query.page) || 1, 1);
+
+  const [items, total, sum] = await Promise.all([
+    prisma.expense.findMany({
+      where,
+      include: {
+        vendor: true,
+        category: true,
+        department: true,
+        deptHead: true,
+        user: { select: { id: true, name: true, email: true } },
+        attachments: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.expense.count({ where }),
+    prisma.expense.aggregate({ where, _sum: { amount: true } }),
+  ]);
+
+  res.json({ items, total, totalAmount: sum._sum.amount ?? 0, page, pageSize });
 });
 
 // Authenticated, access-checked attachment download (files are not served statically).
 router.get('/attachments/:attachmentId', async (req, res) => {
   const attachment = await prisma.expenseAttachment.findUnique({
     where: { id: String(req.params.attachmentId) },
-    include: { expense: { select: { userId: true, departmentId: true } } },
+    include: { expense: { select: { userId: true, departmentId: true, deptHeadId: true } } },
   });
   if (!attachment) return res.status(404).json({ error: 'Attachment not found' });
   if (!canViewExpense(req.user!, attachment.expense)) {
@@ -185,11 +218,16 @@ router.post('/', blockReadOnly, upload.array('attachments', 10), async (req, res
   const data = parsed.data;
   const user = req.user!;
 
-  const departmentId = data.departmentId || user.departmentId;
+  // Non-admins can only file against their OWN department (and heads against
+  // their own head-slice) — enforced here regardless of what the client sends,
+  // so the UI lock can't be bypassed with a crafted request.
+  let departmentId = data.departmentId || user.departmentId;
+  if (user.role !== 'ADMIN' && user.departmentId) departmentId = user.departmentId;
   if (!departmentId) return res.status(400).json({ error: 'Department is required' });
 
   const status = data.status ?? 'SUBMITTED';
-  const deptHeadId = data.deptHeadId || null;
+  let deptHeadId = data.deptHeadId || null;
+  if (user.role === 'DEPARTMENT_HEAD' && user.deptHeadId) deptHeadId = user.deptHeadId;
   const headError = await validateDeptHead(departmentId, deptHeadId, status);
   if (headError) return res.status(400).json({ error: headError });
 
@@ -285,8 +323,11 @@ router.put('/:id', blockReadOnly, async (req, res) => {
     return res.status(400).json({ error: 'A submitted expense cannot be moved back to draft' });
   }
 
-  const departmentId = data.departmentId ?? existing.departmentId;
-  const deptHeadId = data.deptHeadId !== undefined ? data.deptHeadId || null : existing.deptHeadId;
+  let departmentId = data.departmentId ?? existing.departmentId;
+  let deptHeadId = data.deptHeadId !== undefined ? data.deptHeadId || null : existing.deptHeadId;
+  // Non-admins can't move an expense out of their own department/head-slice.
+  if (req.user!.role !== 'ADMIN' && req.user!.departmentId) departmentId = req.user!.departmentId;
+  if (req.user!.role === 'DEPARTMENT_HEAD' && req.user!.deptHeadId) deptHeadId = req.user!.deptHeadId;
   // Re-validate the head when submitting, or when dept/head changed.
   const headError = await validateDeptHead(departmentId, deptHeadId, nextStatus);
   if (headError) return res.status(400).json({ error: headError });
@@ -296,13 +337,21 @@ router.put('/:id', blockReadOnly, async (req, res) => {
     if (fyError) return res.status(400).json({ error: fyError });
   }
 
+  // Resolve the vendor: prefer an explicit id, else match/create by name.
+  let vendorId: string | null = data.vendorId || null;
+  if (!vendorId && data.vendorName && data.vendorName.trim()) {
+    const name = data.vendorName.trim();
+    const existingVendor = await prisma.vendor.findFirst({ where: { name: { equals: name, mode: 'insensitive' } } });
+    vendorId = (existingVendor ?? (await prisma.vendor.create({ data: { name } }))).id;
+  }
+
   const expense = await prisma.expense.update({
     where: { id: String(req.params.id) },
     data: {
-      departmentId: data.departmentId,
+      departmentId,
       deptHeadId,
       status: nextStatus,
-      vendorId: data.vendorId || null,
+      vendorId,
       categoryId: data.categoryId,
       invoiceNo: data.invoiceNo || null,
       invoiceDate: data.invoiceDate ? new Date(data.invoiceDate) : undefined,
@@ -333,14 +382,17 @@ router.put('/:id', blockReadOnly, async (req, res) => {
   res.json(expense);
 });
 
-// Deleting expenses is an admin-only operation.
+// Admins can delete any expense; department heads can delete expenses within
+// their own head-slice.
 router.delete('/:id', blockReadOnly, async (req, res) => {
-  if (req.user!.role !== 'ADMIN') {
-    return res.status(403).json({ error: 'Only admins can delete expenses' });
-  }
-
+  const user = req.user!;
   const existing = await prisma.expense.findUnique({ where: { id: String(req.params.id) } });
   if (!existing) return res.status(404).json({ error: 'Expense not found' });
+
+  const allowed = user.role === 'ADMIN' || headOwnsExpense(user, existing);
+  if (!allowed) {
+    return res.status(403).json({ error: 'You do not have permission to delete this expense' });
+  }
 
   await prisma.expense.delete({ where: { id: existing.id } });
 

@@ -27,8 +27,14 @@ export default function ExpenseDetailPage() {
 
   useEffect(load, [id]);
 
-  // Deleting is admin-only; editing is for the owner or an admin.
-  const canDelete = expense && user?.role === 'ADMIN';
+  // Admins can delete any expense; department heads can delete within their own
+  // head-slice. Editing is for the owner or an admin.
+  const headOwns =
+    user?.role === 'DEPARTMENT_HEAD' &&
+    (user.deptHeadId
+      ? expense?.deptHeadId === user.deptHeadId
+      : !!user.departmentId && expense?.departmentId === user.departmentId);
+  const canDelete = !!expense && (user?.role === 'ADMIN' || !!headOwns);
   const canEdit = expense && (expense.userId === user?.id || user?.role === 'ADMIN');
   const isDraft = expense?.status === 'DRAFT';
 
