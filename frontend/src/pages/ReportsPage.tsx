@@ -4,14 +4,15 @@ import {
   Wallet,
   Store,
   Users,
-  Percent,
   CalendarRange,
+  CalendarClock,
   FileSpreadsheet,
   FileText,
   LoaderCircle,
   type LucideIcon,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { useAuthStore } from '../store/authStore';
 import { PageHeader } from '../components/ui';
 
 type ReportDef = {
@@ -22,45 +23,74 @@ type ReportDef = {
   supportsPeriod?: boolean;
 };
 
-const REPORTS: ReportDef[] = [
+// Company-wide reports for the admin (GST report removed).
+const ADMIN_REPORTS: ReportDef[] = [
   {
     key: 'department-wise',
     label: 'Department-wise Expense Report',
-    description: 'All recorded expenses grouped by department.',
+    description: 'A detailed expense register grouped by department, with head, category, vendor and GST columns and a totals row.',
     icon: Building2,
     supportsPeriod: true,
   },
   {
     key: 'budget-utilization',
     label: 'Budget Utilization Report',
-    description: 'Allocated vs spent vs remaining per department.',
+    description: 'Allocated vs utilized vs remaining and utilization % per department head, with company totals.',
     icon: Wallet,
   },
   {
     key: 'category-wise',
     label: 'Category Budget Report',
-    description: 'Budget vs spend per category.',
+    description: 'Budget vs spend, remaining and share-of-spend per category, with a totals row.',
     icon: Users,
   },
   {
     key: 'vendor-spend',
     label: 'Vendor Spending Report',
-    description: 'Total spend and expense count per vendor.',
+    description: 'Total spend, count, average per expense and last payment date per vendor.',
     icon: Store,
   },
   {
-    key: 'gst',
-    label: 'GST Report',
-    description: 'Expenses with GST amounts and vendor GST numbers.',
-    icon: Percent,
+    key: 'period-summary',
+    label: 'Period Summary Report',
+    description: 'Department spend and share-of-spend for the selected period.',
+    icon: CalendarRange,
+    supportsPeriod: true,
+  },
+];
+
+// Reports for a department head, scoped to their own head-slice.
+const HEAD_REPORTS: ReportDef[] = [
+  {
+    key: 'department-wise',
+    label: 'My Expense Report',
+    description: 'A detailed register of every expense in your head-slice, with category, vendor and GST columns.',
+    icon: Building2,
     supportsPeriod: true,
   },
   {
-    key: 'period-summary',
-    label: 'Monthly / Quarterly / Yearly Report',
-    description: 'Department spend summary for the selected period.',
-    icon: CalendarRange,
-    supportsPeriod: true,
+    key: 'budget-utilization',
+    label: 'My Budget Utilization',
+    description: 'Your allocation vs utilized vs remaining and utilization %.',
+    icon: Wallet,
+  },
+  {
+    key: 'category-wise',
+    label: 'My Category Spend',
+    description: 'Your spend and share-of-spend broken down by category.',
+    icon: Users,
+  },
+  {
+    key: 'vendor-spend',
+    label: 'My Vendor Spend',
+    description: 'Total spend, count and average per vendor for your slice.',
+    icon: Store,
+  },
+  {
+    key: 'monthly-breakdown',
+    label: 'Monthly Spend Breakdown',
+    description: 'Your spend and GST totalled by month for the active financial year.',
+    icon: CalendarClock,
   },
 ];
 
@@ -79,6 +109,10 @@ async function downloadReport(key: string, format: 'xlsx' | 'csv', period?: stri
 }
 
 export default function ReportsPage() {
+  const user = useAuthStore((s) => s.user);
+  const isHead = user?.role === 'DEPARTMENT_HEAD';
+  const reports = isHead ? HEAD_REPORTS : ADMIN_REPORTS;
+
   const [period, setPeriod] = useState('monthly');
   const [downloading, setDownloading] = useState<string | null>(null);
 
@@ -86,6 +120,8 @@ export default function ReportsPage() {
     setDownloading(`${key}-${format}`);
     try {
       await downloadReport(key, format, supportsPeriod ? period : undefined);
+    } catch {
+      // A failed blob download surfaces as a generic error; keep it quiet but reset state.
     } finally {
       setDownloading(null);
     }
@@ -93,7 +129,10 @@ export default function ReportsPage() {
 
   return (
     <div className="mx-auto max-w-5xl p-6">
-      <PageHeader title="Reports" subtitle="Export financial reports to Excel or CSV." />
+      <PageHeader
+        title="Reports"
+        subtitle={isHead ? 'Export reports for your department head-slice.' : 'Export company-wide financial reports to Excel or CSV.'}
+      />
 
       <div className="card mb-6 flex flex-wrap items-center gap-3 p-4">
         <label className="flex items-center gap-2.5 text-sm font-medium text-slate-700">
@@ -101,14 +140,14 @@ export default function ReportsPage() {
           <select value={period} onChange={(e) => setPeriod(e.target.value)} className="input w-52">
             <option value="monthly">Monthly (this month)</option>
             <option value="quarterly">Quarterly (this quarter)</option>
-            <option value="yearly">Yearly (this year)</option>
+            <option value="yearly">Yearly (this financial year)</option>
           </select>
         </label>
         <span className="text-xs text-slate-400">Applies to reports marked "period-aware".</span>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {REPORTS.map((r) => (
+        {reports.map((r) => (
           <div key={r.key} className="card flex flex-col p-5 transition-shadow hover:shadow-pop">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-brand-600">

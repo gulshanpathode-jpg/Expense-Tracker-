@@ -9,17 +9,26 @@ router.get('/summary', async (req, res) => {
   const { fyId, departmentId, dateFrom, dateTo } = req.query;
   const user = req.user!;
 
+  // Employees don't get a dashboard — they only see their own expenses.
+  if (user.role === 'EMPLOYEE') {
+    return res.status(403).json({ error: 'Dashboard is not available for your role' });
+  }
+
+  const isHead = user.role === 'DEPARTMENT_HEAD';
   const effectiveDeptId =
-    user.role === 'DEPARTMENT_HEAD' || user.role === 'MANAGER' || user.role === 'EMPLOYEE'
+    isHead || user.role === 'MANAGER'
       ? user.departmentId ?? undefined
       : departmentId
       ? String(departmentId)
       : undefined;
+  // Department heads are scoped to their own head-slice.
+  const effectiveHeadId = isHead ? user.deptHeadId ?? undefined : undefined;
 
   // Drafts never count toward dashboard numbers.
   const expenseWhere: any = { status: 'SUBMITTED' };
   if (fyId) expenseWhere.fyId = String(fyId);
   if (effectiveDeptId) expenseWhere.departmentId = effectiveDeptId;
+  if (effectiveHeadId) expenseWhere.deptHeadId = effectiveHeadId;
   if (dateFrom || dateTo) {
     expenseWhere.invoiceDate = {};
     if (dateFrom) expenseWhere.invoiceDate.gte = new Date(String(dateFrom));
@@ -28,7 +37,11 @@ router.get('/summary', async (req, res) => {
 
   const [budgets, headSpend, categorySpend, totals] = await Promise.all([
     prisma.budget.findMany({
-      where: { fyId: fyId ? String(fyId) : undefined, departmentId: effectiveDeptId },
+      where: {
+        fyId: fyId ? String(fyId) : undefined,
+        departmentId: effectiveDeptId,
+        ...(effectiveHeadId ? { deptHeadId: effectiveHeadId } : {}),
+      },
       include: { department: true, deptHead: true },
     }),
     // Spend grouped per dept+head pair (head may be null).

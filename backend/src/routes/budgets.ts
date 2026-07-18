@@ -46,17 +46,21 @@ router.get('/', async (req, res) => {
   const { departmentId, fyId } = req.query;
   const user = req.user!;
 
-  // Non-admin/accounts users only see their own department's budgets.
+  // Non-admin/accounts users only see their own department's budgets, and
+  // department heads only their own head-slice.
   const effectiveDeptId = isCompanyWideRole(user.role)
     ? departmentId
       ? String(departmentId)
       : undefined
     : user.departmentId ?? '__none__';
+  const headFilter =
+    user.role === 'DEPARTMENT_HEAD' && user.deptHeadId ? { deptHeadId: user.deptHeadId } : {};
 
   const budgets = await prisma.budget.findMany({
     where: {
       departmentId: effectiveDeptId,
       fyId: fyId ? String(fyId) : undefined,
+      ...headFilter,
     },
     include: { department: true, deptHead: true, financialYear: true },
     orderBy: { annualAmount: 'desc' },

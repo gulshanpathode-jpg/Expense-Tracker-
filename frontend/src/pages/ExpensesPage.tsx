@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Search, SlidersHorizontal, ReceiptText } from 'lucide-react';
+import { Plus, Search, SlidersHorizontal, ReceiptText, ChevronLeft, ChevronRight } from 'lucide-react';
 import clsx from 'clsx';
 import { api } from '../api/client';
 import type { AccountsCategory, Department, Expense, FinancialYear, PaymentMode, Vendor } from '../api/types';
@@ -11,6 +11,7 @@ import DatePicker from '../components/DatePicker';
 import { formatDate, money, titleCase } from '../lib/format';
 
 const PAYMENT_MODES: PaymentMode[] = ['CREDIT_CARD', 'DEBIT_CARD', 'UPI', 'BANK_TRANSFER', 'PAYPAL', 'CASH', 'CHEQUE', 'OTHERS'];
+const PAGE_SIZE = 25;
 
 const canSeeDepartments = (role?: string) => role === 'ADMIN' || role === 'ACCOUNTS';
 
@@ -21,6 +22,11 @@ export default function ExpensesPage() {
   const [q, setQ] = useState('');
   const [qDebounced, setQDebounced] = useState('');
   const [showFilters, setShowFilters] = useState(false);
+
+  // Server-side pagination.
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalAmount, setTotalAmount] = useState(0);
 
   const [departments, setDepartments] = useState<Department[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -50,9 +56,15 @@ export default function ExpensesPage() {
     return () => clearTimeout(t);
   }, [q]);
 
+  // Reset to the first page whenever the filter set changes.
+  const filterKey = [qDebounced, departmentId, vendorId, categoryId, paymentMode, status, fyId, from, to, amountMin, amountMax].join('|');
+  useEffect(() => {
+    setPage(1);
+  }, [filterKey]);
+
   useEffect(() => {
     setLoading(true);
-    const params: Record<string, string> = {};
+    const params: Record<string, string> = { page: String(page), pageSize: String(PAGE_SIZE) };
     if (qDebounced) params.q = qDebounced;
     if (departmentId) params.departmentId = departmentId;
     if (vendorId) params.vendorId = vendorId;
@@ -66,9 +78,13 @@ export default function ExpensesPage() {
     if (amountMax) params.amountMax = amountMax;
     api
       .get('/expenses', { params })
-      .then((res) => setExpenses(res.data))
+      .then((res) => {
+        setExpenses(res.data.items ?? []);
+        setTotalCount(res.data.total ?? 0);
+        setTotalAmount(res.data.totalAmount ?? 0);
+      })
       .finally(() => setLoading(false));
-  }, [qDebounced, departmentId, vendorId, categoryId, paymentMode, status, fyId, from, to, amountMin, amountMax]);
+  }, [filterKey, page]);
 
   const resetFilters = () => {
     setDepartmentId('');
@@ -85,7 +101,9 @@ export default function ExpensesPage() {
 
   const activeFilterCount = [departmentId, vendorId, categoryId, paymentMode, status, fyId, from, to, amountMin, amountMax].filter(Boolean).length;
 
-  const total = useMemo(() => expenses.reduce((s, e) => s + e.amount, 0), [expenses]);
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  const rangeStart = totalCount === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const rangeEnd = Math.min(page * PAGE_SIZE, totalCount);
 
   const departmentOptions = useMemo(() => departments.map((d) => ({ value: d.id, label: d.name })), [departments]);
   const vendorOptions = useMemo(() => vendors.map((v) => ({ value: v.id, label: v.name })), [vendors]);
@@ -248,9 +266,9 @@ export default function ExpensesPage() {
           {!loading && expenses.length > 0 && (
             <div className="flex items-center justify-between bg-slate-50/80 px-4 py-3 text-sm">
               <span className="text-xs text-slate-500">
-                {expenses.length} expense{expenses.length === 1 ? '' : 's'}
+                {totalCount} expense{totalCount === 1 ? '' : 's'}
               </span>
-              <span className="num font-semibold text-slate-900">{money(total)}</span>
+              <span className="num font-semibold text-slate-900">{money(totalAmount)}</span>
             </div>
           )}
         </div>
@@ -309,10 +327,10 @@ export default function ExpensesPage() {
               <tfoot>
                 <tr className="border-t border-slate-200 bg-slate-50/80">
                   <td className="px-4 py-3 text-xs text-slate-500" colSpan={4}>
-                    {expenses.length} expense{expenses.length === 1 ? '' : 's'}
+                    {totalCount} expense{totalCount === 1 ? '' : 's'} (filtered total)
                   </td>
                   <td className="hidden lg:table-cell" />
-                  <td className="num px-4 py-3 text-right font-semibold text-slate-900">{money(total)}</td>
+                  <td className="num px-4 py-3 text-right font-semibold text-slate-900">{money(totalAmount)}</td>
                 </tr>
               </tfoot>
             )}
@@ -332,6 +350,36 @@ export default function ExpensesPage() {
           />
         )}
       </div>
+
+      {totalCount > PAGE_SIZE && (
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <p className="text-xs text-slate-500">
+            Showing <span className="num font-medium text-slate-700">{rangeStart}–{rangeEnd}</span> of{' '}
+            <span className="num font-medium text-slate-700">{totalCount}</span>
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1 || loading}
+              className="btn-secondary btn-sm"
+            >
+              <ChevronLeft size={14} />
+              Prev
+            </button>
+            <span className="num text-xs text-slate-500">
+              Page {page} of {totalPages}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages || loading}
+              className="btn-secondary btn-sm"
+            >
+              Next
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

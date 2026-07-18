@@ -82,10 +82,15 @@ export default function NewExpensePage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
+  // Non-admins file expenses only against their own department (and heads only
+  // against their own slice) so spend always rolls up correctly.
+  const lockDepartment = authUser?.role !== 'ADMIN' && !!authUser?.departmentId;
+  const lockHead = authUser?.role === 'DEPARTMENT_HEAD' && !!authUser?.deptHeadId;
+
   const [form, setForm] = useState({
     invoiceDate: new Date().toISOString().slice(0, 10),
     departmentId: authUser?.departmentId ?? '',
-    deptHeadId: '',
+    deptHeadId: authUser?.deptHeadId ?? '',
     vendorId: '',
     vendorName: '',
     invoiceNo: '',
@@ -231,6 +236,7 @@ export default function NewExpensePage() {
           departmentId: form.departmentId,
           deptHeadId: form.deptHeadId || null,
           vendorId: form.vendorId || null,
+          vendorName: form.vendorName || null,
           categoryId: form.categoryId,
           invoiceNo: form.invoiceNo || null,
           invoiceDate: form.invoiceDate,
@@ -382,21 +388,17 @@ export default function NewExpensePage() {
             </Field>
             <Field label="Merchant">
               <input
-                list="vendor-list"
                 value={form.vendorName}
                 onChange={(e) => {
-                  const match = vendors.find((v) => v.name === e.target.value);
+                  // Free-text merchant name; the backend links or creates the
+                  // vendor by name. A matching existing vendor is linked by id.
+                  const match = vendors.find((v) => v.name.toLowerCase() === e.target.value.trim().toLowerCase());
                   update('vendorName', e.target.value);
                   update('vendorId', match?.id ?? '');
                 }}
                 className="input"
-                placeholder="Search or type vendor"
+                placeholder="Enter merchant / vendor name"
               />
-              <datalist id="vendor-list">
-                {vendors.map((v) => (
-                  <option key={v.id} value={v.name} />
-                ))}
-              </datalist>
             </Field>
             <Field label="Amount (₹)" required error={errors.amount}>
               <div className="relative">
@@ -436,7 +438,12 @@ export default function NewExpensePage() {
         <section className="p-6">
           <SectionHeading icon={<Landmark size={14} />} title="Classification" />
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Department" required error={errors.departmentId}>
+            <Field
+              label="Department"
+              required
+              error={errors.departmentId}
+              hint={lockDepartment ? 'Set to your department.' : undefined}
+            >
               <Select
                 value={form.departmentId}
                 onChange={(v) => {
@@ -445,6 +452,7 @@ export default function NewExpensePage() {
                 }}
                 options={departmentOptions}
                 placeholder="Select department"
+                disabled={lockDepartment}
                 invalid={!!errors.departmentId}
               />
             </Field>
@@ -452,14 +460,20 @@ export default function NewExpensePage() {
               label="Department Head"
               required={deptHeads.length > 0}
               error={errors.deptHeadId}
-              hint={form.departmentId && deptHeads.length === 0 ? 'This department has no heads — spend is tracked at department level.' : undefined}
+              hint={
+                lockHead
+                  ? 'Attributed to your head-slice.'
+                  : form.departmentId && deptHeads.length === 0
+                  ? 'This department has no heads — spend is tracked at department level.'
+                  : undefined
+              }
             >
               <Select
                 value={form.deptHeadId}
                 onChange={(v) => update('deptHeadId', v)}
                 options={headOptions}
                 placeholder={deptHeads.length > 0 ? 'Select head' : 'Not applicable'}
-                disabled={deptHeads.length === 0}
+                disabled={deptHeads.length === 0 || lockHead}
                 invalid={!!errors.deptHeadId}
               />
             </Field>

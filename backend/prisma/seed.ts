@@ -3,11 +3,10 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-// Departments, heads, and annual budgets from "Engage 360 data.xlsx"
-// (Leadership Discretionary Fund Distribution - 15 Lacs, allocated by headcount).
-// One department can have multiple heads; each budget is per dept-head pair.
-// Departments without heads carry the budget at department level (head = null).
-const DEPARTMENTS: { name: string; heads: { name: string; budget: number }[]; budget?: number }[] = [
+// Departments, heads, and annual budgets from "Engage 360 data.xlsx".
+// Every department now has at least one head, and every head is a login user
+// (email firstname@dhaninfo.biz). Budgets are per department-head.
+const DEPARTMENTS: { name: string; heads: { name: string; budget: number }[] }[] = [
   {
     name: 'Operations',
     heads: [
@@ -23,9 +22,15 @@ const DEPARTMENTS: { name: string; heads: { name: string; budget: number }[]; bu
   { name: 'Human Resource', heads: [{ name: 'Abhijeet', budget: 25270.76 }] },
   { name: 'Administration', heads: [{ name: 'Prashik', budget: 18531.89 }] },
   { name: 'Artificial Intelligence', heads: [{ name: 'Kanchan', budget: 8423.59 }] },
-  { name: 'Accounts & Finance', heads: [], budget: 5054.15 },
-  { name: 'Sales & Marketing', heads: [], budget: 26955.48 },
+  // Previously headless — now carry a head (placeholder names to be renamed).
+  { name: 'Accounts & Finance', heads: [{ name: 'Accounts Head', budget: 5054.15 }] },
+  { name: 'Sales & Marketing', heads: [{ name: 'Rohan', budget: 26955.48 }] },
 ];
+
+// firstname@dhaninfo.biz (spaces → dots, lowercased).
+function headEmail(name: string): string {
+  return `${name.trim().toLowerCase().replace(/\s+/g, '.')}@dhaninfo.biz`;
+}
 
 // Categories and budgets from the "Objectives" table in the Excel.
 const CATEGORIES: { code: string; label: string; budgetAmount: number }[] = [
@@ -86,6 +91,8 @@ const EXPENSE_NOTES: Record<string, string[]> = {
   E10: ['Hackathon prizes', 'Innovation demo material', 'Prototype supplies'],
 };
 
+const DEFAULT_PASSWORD = 'Dhaninfo@2026';
+
 async function main() {
   console.log('Clearing transactional data...');
   await prisma.expenseAttachment.deleteMany();
@@ -119,10 +126,10 @@ async function main() {
     data: { isActive: false },
   });
 
-  console.log('Seeding departments, heads, and budgets...');
-  // Detach users from soon-to-be-deactivated legacy departments ("Operations - Vikas" style).
-  const legacyNames = DEPARTMENTS.map((d) => d.name);
-  const legacyDepts = await prisma.department.findMany({ where: { name: { notIn: legacyNames } } });
+  console.log('Seeding departments, heads, head-users, and budgets...');
+  // Deactivate any departments no longer in the config (detach their users first).
+  const currentNames = DEPARTMENTS.map((d) => d.name);
+  const legacyDepts = await prisma.department.findMany({ where: { name: { notIn: currentNames } } });
   if (legacyDepts.length > 0) {
     await prisma.user.updateMany({
       where: { departmentId: { in: legacyDepts.map((d) => d.id) } },
@@ -134,8 +141,23 @@ async function main() {
     });
   }
 
-  // budget targets per (deptId, headId-or-null) used for dummy expense generation
-  const budgetTargets: { departmentId: string; deptHeadId: string | null; deptName: string; headName: string | null; budget: number }[] = [];
+  const password = await bcrypt.hash(DEFAULT_PASSWORD, 10);
+
+  // Single admin account.
+  const admin = await prisma.user.upsert({
+    where: { email: 'admin@dhaninfo.biz' },
+    update: { role: 'ADMIN', isActive: true },
+    create: { name: 'admin', email: 'admin@dhaninfo.biz', passwordHash: password, role: 'ADMIN' },
+  });
+
+  // Retire any old *.exptrack.local demo accounts from earlier seeds.
+  await prisma.user.updateMany({
+    where: { email: { endsWith: '@exptrack.local' } },
+    data: { isActive: false, departmentId: null },
+  });
+
+  type BudgetTarget = { departmentId: string; deptHeadId: string; deptName: string; headName: string; headUserId: string; budget: number };
+  const budgetTargets: BudgetTarget[] = [];
   const deptIds = new Map<string, string>();
 
   for (const d of DEPARTMENTS) {
@@ -147,11 +169,21 @@ async function main() {
     deptIds.set(d.name, dept.id);
 
     for (const h of d.heads) {
+      // Head login user.
+      const email = headEmail(h.name);
+      const headUser = await prisma.user.upsert({
+        where: { email },
+        update: { role: 'DEPARTMENT_HEAD', departmentId: dept.id, isActive: true },
+        create: { name: h.name, email, passwordHash: password, role: 'DEPARTMENT_HEAD', departmentId: dept.id },
+      });
+
+      // Head record, linked to the user.
       const head = await prisma.departmentHead.upsert({
         where: { departmentId_name: { departmentId: dept.id, name: h.name } },
-        update: { isActive: true },
-        create: { departmentId: dept.id, name: h.name },
+        update: { isActive: true, userId: headUser.id },
+        create: { departmentId: dept.id, name: h.name, userId: headUser.id },
       });
+
       await prisma.budget.create({
         data: {
           departmentId: dept.id,
@@ -161,22 +193,38 @@ async function main() {
           monthlyAmounts: evenMonthlySplit(h.budget),
         },
       });
-      budgetTargets.push({ departmentId: dept.id, deptHeadId: head.id, deptName: d.name, headName: h.name, budget: h.budget });
+      budgetTargets.push({
+        departmentId: dept.id,
+        deptHeadId: head.id,
+        deptName: d.name,
+        headName: h.name,
+        headUserId: headUser.id,
+        budget: h.budget,
+      });
     }
 
-    if (d.heads.length === 0 && d.budget) {
-      await prisma.budget.create({
-        data: {
-          departmentId: dept.id,
-          deptHeadId: null,
-          fyId: fy.id,
-          annualAmount: d.budget,
-          monthlyAmounts: evenMonthlySplit(d.budget),
-        },
+    // Retire any heads (and their login users) no longer in this dept's config,
+    // e.g. after renaming a head. Guarded so an empty config never nukes all heads.
+    const validNames = d.heads.map((h) => h.name);
+    if (validNames.length > 0) {
+      const staleHeads = await prisma.departmentHead.findMany({
+        where: { departmentId: dept.id, name: { notIn: validNames }, isActive: true },
       });
-      budgetTargets.push({ departmentId: dept.id, deptHeadId: null, deptName: d.name, headName: null, budget: d.budget });
+      for (const sh of staleHeads) {
+        await prisma.departmentHead.update({ where: { id: sh.id }, data: { isActive: false } });
+        if (sh.userId) await prisma.user.update({ where: { id: sh.userId }, data: { isActive: false, departmentId: null } });
+      }
     }
   }
+
+  // A sample employee in Operations (reports into the Vikas head-slice for tests).
+  const opsId = deptIds.get('Operations')!;
+  const employee = await prisma.user.upsert({
+    where: { email: 'employee@dhaninfo.biz' },
+    update: { role: 'EMPLOYEE', departmentId: opsId, isActive: true },
+    create: { name: 'Eve Employee', email: 'employee@dhaninfo.biz', passwordHash: password, role: 'EMPLOYEE', departmentId: opsId },
+  });
+  const vikasTarget = budgetTargets.find((t) => t.deptName === 'Operations' && t.headName === 'Vikas')!;
 
   console.log('Seeding vendors...');
   const vendorIds: string[] = [];
@@ -185,49 +233,6 @@ async function main() {
     const vendor = existing ?? (await prisma.vendor.create({ data: v }));
     vendorIds.push(vendor.id);
   }
-
-  console.log('Seeding users...');
-  const password = await bcrypt.hash('Passw0rd!', 10);
-  const opsId = deptIds.get('Operations')!;
-
-  const admin = await prisma.user.upsert({
-    where: { email: 'admin@exptrack.local' },
-    update: {},
-    create: { name: 'Ava Admin', email: 'admin@exptrack.local', passwordHash: password, role: 'ADMIN' },
-  });
-
-  const deptHead = await prisma.user.upsert({
-    where: { email: 'depthead@exptrack.local' },
-    update: { departmentId: opsId },
-    create: {
-      name: 'Dana DeptHead', email: 'depthead@exptrack.local', passwordHash: password,
-      role: 'DEPARTMENT_HEAD', departmentId: opsId,
-    },
-  });
-
-  const manager = await prisma.user.upsert({
-    where: { email: 'manager@exptrack.local' },
-    update: { departmentId: opsId },
-    create: {
-      name: 'Max Manager', email: 'manager@exptrack.local', passwordHash: password,
-      role: 'MANAGER', departmentId: opsId, managerId: deptHead.id,
-    },
-  });
-
-  await prisma.user.upsert({
-    where: { email: 'employee@exptrack.local' },
-    update: { departmentId: opsId },
-    create: {
-      name: 'Eve Employee', email: 'employee@exptrack.local', passwordHash: password,
-      role: 'EMPLOYEE', departmentId: opsId, managerId: manager.id,
-    },
-  });
-
-  await prisma.user.upsert({
-    where: { email: 'accounts@exptrack.local' },
-    update: {},
-    create: { name: 'Ann Accounts', email: 'accounts@exptrack.local', passwordHash: password, role: 'ACCOUNTS' },
-  });
 
   console.log('Seeding dummy expenses...');
   const rand = mulberry32(360360);
@@ -257,7 +262,8 @@ async function main() {
 
       await prisma.expense.create({
         data: {
-          userId: admin.id,
+          // Head is the submitter for their own slice's dummy expenses.
+          userId: t.headUserId,
           departmentId: t.departmentId,
           deptHeadId: t.deptHeadId,
           vendorId: vendorIds[Math.floor(rand() * vendorIds.length)],
@@ -276,28 +282,49 @@ async function main() {
     }
   }
 
-  // A few draft expenses so the Draft filter/flows have data out of the box.
-  const draftSamples = [
-    { dept: 'Operations', head: 'Vikas', amount: 4200, note: 'Team offsite venue advance (draft)' },
-    { dept: 'Human Resource', head: 'Abhijeet', amount: 1800, note: 'Welcome kit vendor quote (draft)' },
-    { dept: 'Sales & Marketing', head: null, amount: 2600, note: 'Client meet snacks (draft)' },
-  ];
-  for (const s of draftSamples) {
-    const departmentId = deptIds.get(s.dept)!;
-    const head = s.head
-      ? await prisma.departmentHead.findUnique({ where: { departmentId_name: { departmentId, name: s.head } } })
-      : null;
+  // A few expenses submitted by the sample employee (into the Vikas slice), so
+  // the employee has their own records and the head sees them in their slice.
+  for (let i = 0; i < 4; i++) {
+    const amount = 300 + Math.round(rand() * 1500);
+    const gst = rand() > 0.5 ? Math.round(amount * 0.18 * 100) / 100 : null;
+    const invoiceDate = new Date(fyStart + rand() * (fyUpto - fyStart));
     await prisma.expense.create({
       data: {
-        userId: admin.id,
-        departmentId,
-        deptHeadId: head?.id ?? null,
+        userId: employee.id,
+        departmentId: vikasTarget.departmentId,
+        deptHeadId: vikasTarget.deptHeadId,
+        vendorId: vendorIds[Math.floor(rand() * vendorIds.length)],
+        categoryId: categoryIds.get('E08')!,
+        invoiceNo: `INV-${++invoiceCounter}`,
+        invoiceDate,
+        amount,
+        currency: 'INR',
+        gstAmount: gst,
+        paymentMode: 'UPI',
+        description: 'Team welcome kit purchase',
+        fyId: fy.id,
+        status: ExpenseStatus.SUBMITTED,
+      },
+    });
+  }
+
+  // A couple of draft expenses (private to their creator) for draft flows.
+  const draftPlans = [
+    { userId: vikasTarget.headUserId, target: vikasTarget, amount: 4200, note: 'Team offsite venue advance (draft)' },
+    { userId: employee.id, target: vikasTarget, amount: 1800, note: 'Welcome kit vendor quote (draft)' },
+  ];
+  for (const p of draftPlans) {
+    await prisma.expense.create({
+      data: {
+        userId: p.userId,
+        departmentId: p.target.departmentId,
+        deptHeadId: p.target.deptHeadId,
         categoryId: categoryIds.get('E02')!,
         invoiceDate: new Date('2026-07-10'),
-        amount: s.amount,
+        amount: p.amount,
         currency: 'INR',
         paymentMode: 'UPI',
-        description: s.note,
+        description: p.note,
         fyId: fy.id,
         status: ExpenseStatus.DRAFT,
       },
@@ -305,9 +332,11 @@ async function main() {
   }
 
   const expenseCount = await prisma.expense.count();
-  console.log(`Seed complete. ${expenseCount} dummy expenses created (incl. ${draftSamples.length} drafts).`);
-  console.log('Demo logins (password: Passw0rd!):');
-  console.log('  admin@exptrack.local, depthead@exptrack.local, manager@exptrack.local, employee@exptrack.local, accounts@exptrack.local');
+  console.log(`Seed complete. ${expenseCount} expenses created.`);
+  console.log(`Logins (password: ${DEFAULT_PASSWORD}):`);
+  console.log('  Admin:      admin@dhaninfo.biz');
+  console.log('  Dept heads: vikas@dhaninfo.biz, rohan@dhaninfo.biz, satish@dhaninfo.biz, … (firstname@dhaninfo.biz)');
+  console.log('  Employee:   employee@dhaninfo.biz');
 }
 
 main()

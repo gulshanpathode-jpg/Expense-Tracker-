@@ -9,6 +9,9 @@ export interface AuthUser {
   email: string;
   role: Role;
   departmentId: string | null;
+  // The DepartmentHead record this user is (for DEPARTMENT_HEAD users); scopes
+  // their view to a single head-slice. Null for other roles / department-level heads.
+  deptHeadId?: string | null;
 }
 
 interface AuthState {
