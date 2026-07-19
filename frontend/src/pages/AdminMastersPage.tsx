@@ -21,6 +21,18 @@ function isStrongPassword(p: string): boolean {
 }
 const PASSWORD_HINT = 'Min 8 characters, with a letter and a number';
 
+// "Gulshan Pathode" -> "gulshan.pathode@dhaninfo.biz". Keeps only letters/digits
+// within each name part; empty name yields an empty suggestion.
+const EMAIL_DOMAIN = 'dhaninfo.biz';
+function suggestEmail(fullName: string): string {
+  const parts = fullName
+    .toLowerCase()
+    .split(/\s+/)
+    .map((p) => p.replace(/[^a-z0-9]/g, ''))
+    .filter(Boolean);
+  return parts.length ? `${parts.join('.')}@${EMAIL_DOMAIN}` : '';
+}
+
 // Admin is a single account, so only these two roles can be assigned here.
 const ROLE_OPTIONS = [
   { value: 'EMPLOYEE', label: 'Employee' },
@@ -55,6 +67,8 @@ export default function AdminMastersPage() {
   // Users card
   const [userName, setUserName] = useState('');
   const [userEmail, setUserEmail] = useState('');
+  // While false, the email field auto-fills from the name; a manual edit stops that.
+  const [userEmailEdited, setUserEmailEdited] = useState(false);
   const [userRole, setUserRole] = useState('EMPLOYEE');
   const [userDeptId, setUserDeptId] = useState('');
   const [userHeadId, setUserHeadId] = useState('');
@@ -235,6 +249,7 @@ export default function AdminMastersPage() {
       toast.success(`User ${userName.trim()} created`);
       setUserName('');
       setUserEmail('');
+      setUserEmailEdited(false);
       setUserRole('EMPLOYEE');
       setUserDeptId('');
       setUserHeadId('');
@@ -449,11 +464,36 @@ export default function AdminMastersPage() {
         <div className="mb-5 grid grid-cols-1 items-start gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <div>
             <label className="label-xs">Full Name</label>
-            <input value={userName} onChange={(e) => setUserName(e.target.value)} className="input" placeholder="e.g. Priya Sharma" />
+            <input
+              value={userName}
+              onChange={(e) => {
+                setUserName(e.target.value);
+                if (!userEmailEdited) setUserEmail(suggestEmail(e.target.value));
+              }}
+              className="input"
+              placeholder="e.g. Priya Sharma"
+              name="new-user-name"
+              autoComplete="off"
+            />
           </div>
           <div>
             <label className="label-xs">Email</label>
-            <input value={userEmail} onChange={(e) => setUserEmail(e.target.value)} className="input" type="email" placeholder="name@dhaninfo.biz" />
+            <input
+              value={userEmail}
+              onChange={(e) => {
+                // Browser credential autofill fires change events on an unfocused
+                // field; ignore those so they can't hijack this admin form.
+                if (e.target !== document.activeElement) return;
+                setUserEmail(e.target.value);
+                // An emptied field hands control back to the name-based suggestion.
+                setUserEmailEdited(e.target.value.trim() !== '');
+              }}
+              className="input"
+              type="email"
+              placeholder="@dhaninfo.biz"
+              name="new-user-email"
+              autoComplete="off"
+            />
           </div>
           <div>
             <label className="label-xs">Role</label>

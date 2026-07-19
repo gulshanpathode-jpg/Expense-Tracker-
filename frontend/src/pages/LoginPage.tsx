@@ -31,7 +31,7 @@ const DEMO_PASSWORD = 'Dhaninfo@2026';
 
 const DEMO_ACCOUNTS = [
   { label: 'Admin', email: 'admin@dhaninfo.biz' },
-  { label: 'Dept Head', email: 'vikas@dhaninfo.biz' },
+  { label: 'Dept Head', email: 'vikas.jain@dhaninfo.biz' },
   { label: 'Employee', email: 'employee@dhaninfo.biz' },
 ];
 

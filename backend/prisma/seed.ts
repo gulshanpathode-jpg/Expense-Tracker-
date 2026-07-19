@@ -4,33 +4,27 @@ import bcrypt from 'bcryptjs';
 const prisma = new PrismaClient();
 
 // Departments, heads, and annual budgets from "Engage 360 data.xlsx".
-// Every department has at least one head, and every head is a login user
-// (email firstname@dhaninfo.biz). Budgets are per department-head.
-const DEPARTMENTS: { name: string; heads: { name: string; budget: number }[] }[] = [
+// Every department has at least one head, and every head is a login user.
+// Emails are the real dhaninfo.biz mailboxes. Budgets are per department-head.
+const DEPARTMENTS: { name: string; heads: { name: string; email: string; budget: number }[] }[] = [
   {
     name: 'Operations',
     heads: [
-      { name: 'Rakesh', budget: 375691.94 },
-      { name: 'Vikas', budget: 458243.08 },
-      { name: 'Solomon', budget: 148255.11 },
-      { name: 'Ruchita', budget: 163417.57 },
-      { name: 'Himanshu', budget: 23586.04 },
-      { name: 'Ritesh', budget: 126353.79 },
+      { name: 'Rakesh', email: 'rakesh@dhaninfo.biz', budget: 375691.94 },
+      { name: 'Vikas', email: 'vikas.jain@dhaninfo.biz', budget: 458243.08 },
+      { name: 'Solomon', email: 'solomon.david@dhaninfo.biz', budget: 148255.11 },
+      { name: 'Ruchita', email: 'rnagmote@dhaninfo.biz', budget: 163417.57 },
+      { name: 'Himanshu', email: 'himanshu.bajaj@dhaninfo.biz', budget: 23586.04 },
+      { name: 'Ritesh', email: 'ritesh.labde@dhaninfo.biz', budget: 126353.79 },
     ],
   },
-  { name: 'Information Technology', heads: [{ name: 'Satish', budget: 21901.32 }] },
-  { name: 'Human Resource', heads: [{ name: 'Abhijeet', budget: 25270.76 }] },
-  { name: 'Administration', heads: [{ name: 'Prashik', budget: 18531.89 }] },
-  { name: 'Artificial Intelligence', heads: [{ name: 'Kanchan', budget: 8423.59 }] },
-  // Previously headless — now carry a head (placeholder names to be renamed).
-  { name: 'Accounts & Finance', heads: [{ name: 'Accounts Head', budget: 5054.15 }] },
-  { name: 'Sales & Marketing', heads: [{ name: 'Rohan', budget: 26955.48 }] },
+  { name: 'Information Technology', heads: [{ name: 'Satish', email: 'satish@dhaninfo.biz', budget: 21901.32 }] },
+  { name: 'Human Resource', heads: [{ name: 'Abhijeet', email: 'abhijeet.dhawale@dhaninfo.biz', budget: 25270.76 }] },
+  { name: 'Administration', heads: [{ name: 'Prashik', email: 'prashik.ingle@dhaninfo.biz', budget: 18531.89 }] },
+  { name: 'Artificial Intelligence', heads: [{ name: 'Kanchan', email: 'kanchan.borade@dhaninfo.biz', budget: 8423.59 }] },
+  { name: 'Accounts & Finance', heads: [{ name: 'Accounts Head', email: 'accounts@dhaninfo.biz', budget: 5054.15 }] },
+  { name: 'Sales & Marketing', heads: [{ name: 'Rohan', email: 'sales@dhaninfo.biz', budget: 26955.48 }] },
 ];
-
-// firstname@dhaninfo.biz (spaces → dots, lowercased).
-function headEmail(name: string): string {
-  return `${name.trim().toLowerCase().replace(/\s+/g, '.')}@dhaninfo.biz`;
-}
 
 // Categories and their annual budgets from the "Objectives" table in the Excel.
 const CATEGORIES: { code: string; label: string; budgetAmount: number }[] = [
@@ -144,7 +138,7 @@ async function main() {
 
     for (const h of d.heads) {
       // Head login user.
-      const email = headEmail(h.name);
+      const email = h.email;
       const headUser = await prisma.user.upsert({
         where: { email },
         update: { role: 'DEPARTMENT_HEAD', departmentId: dept.id, isActive: true },
@@ -196,7 +190,7 @@ async function main() {
   console.log(`Seed complete. ${users} active users, ${budgets} budget allocations, 0 expenses.`);
   console.log(`Logins (password: ${DEFAULT_PASSWORD}):`);
   console.log('  Admin:      admin@dhaninfo.biz');
-  console.log('  Dept heads: vikas@dhaninfo.biz, rohan@dhaninfo.biz, satish@dhaninfo.biz, … (firstname@dhaninfo.biz)');
+  console.log('  Dept heads: vikas.jain@dhaninfo.biz, sales@dhaninfo.biz, satish@dhaninfo.biz, …');
   console.log('  Employee:   employee@dhaninfo.biz');
 }
 
