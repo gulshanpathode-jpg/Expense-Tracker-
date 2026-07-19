@@ -97,12 +97,22 @@ async function main() {
   const currentNames = DEPARTMENTS.map((d) => d.name);
   const legacyDepts = await prisma.department.findMany({ where: { name: { notIn: currentNames } } });
   if (legacyDepts.length > 0) {
+    const legacyIds = legacyDepts.map((d) => d.id);
     await prisma.user.updateMany({
-      where: { departmentId: { in: legacyDepts.map((d) => d.id) } },
+      where: { departmentId: { in: legacyIds } },
       data: { departmentId: null },
     });
+    // Retire heads of removed departments too (and their login users), so
+    // every environment converges to the same active-head set.
+    const legacyHeads = await prisma.departmentHead.findMany({
+      where: { departmentId: { in: legacyIds }, isActive: true },
+    });
+    for (const lh of legacyHeads) {
+      await prisma.departmentHead.update({ where: { id: lh.id }, data: { isActive: false } });
+      if (lh.userId) await prisma.user.update({ where: { id: lh.userId }, data: { isActive: false, departmentId: null } });
+    }
     await prisma.department.updateMany({
-      where: { id: { in: legacyDepts.map((d) => d.id) } },
+      where: { id: { in: legacyIds } },
       data: { isActive: false },
     });
   }
