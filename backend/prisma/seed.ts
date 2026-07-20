@@ -6,22 +6,23 @@ const prisma = new PrismaClient();
 // Departments, heads, and annual budgets from "Engage 360 data.xlsx".
 // Every department has at least one head, and every head is a login user.
 // Emails are the real dhaninfo.biz mailboxes. Budgets are per department-head.
-const DEPARTMENTS: { name: string; heads: { name: string; email: string; budget: number }[] }[] = [
+// ldfOnly heads may only file expenses under the Leadership Discretionary Fund category.
+const DEPARTMENTS: { name: string; heads: { name: string; email: string; budget: number; ldfOnly?: boolean }[] }[] = [
   {
     name: 'Operations',
     heads: [
-      { name: 'Rakesh', email: 'rakesh@dhaninfo.biz', budget: 375691.94 },
-      { name: 'Vikas', email: 'vikas.jain@dhaninfo.biz', budget: 458243.08 },
-      { name: 'Solomon', email: 'solomon.david@dhaninfo.biz', budget: 148255.11 },
-      { name: 'Ruchita', email: 'rnagmote@dhaninfo.biz', budget: 163417.57 },
-      { name: 'Himanshu', email: 'himanshu.bajaj@dhaninfo.biz', budget: 23586.04 },
-      { name: 'Ritesh', email: 'ritesh.labde@dhaninfo.biz', budget: 126353.79 },
+      { name: 'Rakesh', email: 'rakesh@dhaninfo.biz', budget: 375691.94, ldfOnly: true },
+      { name: 'Vikas', email: 'vikas.jain@dhaninfo.biz', budget: 458243.08, ldfOnly: true },
+      { name: 'Solomon', email: 'solomon.david@dhaninfo.biz', budget: 148255.11, ldfOnly: true },
+      { name: 'Ruchita', email: 'rnagmote@dhaninfo.biz', budget: 163417.57, ldfOnly: true },
+      { name: 'Himanshu', email: 'himanshu.bajaj@dhaninfo.biz', budget: 23586.04, ldfOnly: true },
+      { name: 'Ritesh', email: 'ritesh.labde@dhaninfo.biz', budget: 126353.79, ldfOnly: true },
     ],
   },
   { name: 'Information Technology', heads: [{ name: 'Satish', email: 'satish@dhaninfo.biz', budget: 21901.32 }] },
   { name: 'Human Resource', heads: [{ name: 'Abhijeet', email: 'abhijeet.dhawale@dhaninfo.biz', budget: 25270.76 }] },
   { name: 'Administration', heads: [{ name: 'Prashik', email: 'prashik.ingle@dhaninfo.biz', budget: 18531.89 }] },
-  { name: 'Artificial Intelligence', heads: [{ name: 'Kanchan', email: 'kanchan.borade@dhaninfo.biz', budget: 8423.59 }] },
+  { name: 'Artificial Intelligence', heads: [{ name: 'Kanchan', email: 'kanchan.borade@dhaninfo.biz', budget: 8423.59, ldfOnly: true }] },
   { name: 'Accounts & Finance', heads: [{ name: 'Accounts Head', email: 'accounts@dhaninfo.biz', budget: 5054.15 }] },
   { name: 'Sales & Marketing', heads: [{ name: 'Sales Head', email: 'sales@dhaninfo.biz', budget: 26955.48 }] },
 ];
@@ -85,6 +86,8 @@ async function main() {
     where: { code: { notIn: CATEGORIES.map((c) => c.code) } },
     data: { isActive: false },
   });
+  const ldf = await prisma.accountsCategory.findUnique({ where: { code: 'E02' } });
+  if (!ldf) throw new Error('Leadership Discretionary Fund category (E02) missing after seed');
 
   console.log('Seeding departments, heads, head-users, and budgets...');
   // Deactivate any departments no longer in the config (detach their users first).
@@ -146,10 +149,11 @@ async function main() {
       });
 
       // Head record, linked to the user.
+      const restrictedCategoryId = h.ldfOnly ? ldf.id : null;
       const head = await prisma.departmentHead.upsert({
         where: { departmentId_name: { departmentId: dept.id, name: h.name } },
-        update: { isActive: true, userId: headUser.id },
-        create: { departmentId: dept.id, name: h.name, userId: headUser.id },
+        update: { isActive: true, userId: headUser.id, restrictedCategoryId },
+        create: { departmentId: dept.id, name: h.name, userId: headUser.id, restrictedCategoryId },
       });
 
       // Budget allocation for this head (annual split evenly across 12 months).

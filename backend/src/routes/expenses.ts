@@ -40,16 +40,25 @@ const expenseUpdateSchema = expenseSchema
   });
 
 // A submitted expense must name a head when its department has active heads,
-// so per-head spend stays exact. Drafts can leave it blank.
+// so per-head spend stays exact. Drafts can leave it blank. Some heads are
+// restricted to a single category (restrictedCategoryId) — enforced here so
+// the filtered dropdown can't be bypassed with a crafted request.
 async function validateDeptHead(
   departmentId: string,
   deptHeadId: string | null,
-  status: 'DRAFT' | 'SUBMITTED'
+  status: 'DRAFT' | 'SUBMITTED',
+  categoryId: string | null
 ): Promise<string | null> {
   if (deptHeadId) {
-    const head = await prisma.departmentHead.findUnique({ where: { id: deptHeadId } });
+    const head = await prisma.departmentHead.findUnique({
+      where: { id: deptHeadId },
+      include: { restrictedCategory: { select: { label: true } } },
+    });
     if (!head || head.departmentId !== departmentId) return 'Selected head does not belong to the department';
     if (!head.isActive) return 'Selected department head is inactive';
+    if (head.restrictedCategoryId && categoryId && categoryId !== head.restrictedCategoryId) {
+      return `Expenses for ${head.name} can only use the ${head.restrictedCategory!.label} category`;
+    }
     return null;
   }
   if (status === 'DRAFT') return null;
@@ -228,7 +237,7 @@ router.post('/', blockReadOnly, upload.array('attachments', 10), async (req, res
   const status = data.status ?? 'SUBMITTED';
   let deptHeadId = data.deptHeadId || null;
   if (user.role === 'DEPARTMENT_HEAD' && user.deptHeadId) deptHeadId = user.deptHeadId;
-  const headError = await validateDeptHead(departmentId, deptHeadId, status);
+  const headError = await validateDeptHead(departmentId, deptHeadId, status, data.categoryId);
   if (headError) return res.status(400).json({ error: headError });
 
   const invoiceDate = new Date(data.invoiceDate);
@@ -329,7 +338,7 @@ router.put('/:id', blockReadOnly, async (req, res) => {
   if (req.user!.role !== 'ADMIN' && req.user!.departmentId) departmentId = req.user!.departmentId;
   if (req.user!.role === 'DEPARTMENT_HEAD' && req.user!.deptHeadId) deptHeadId = req.user!.deptHeadId;
   // Re-validate the head when submitting, or when dept/head changed.
-  const headError = await validateDeptHead(departmentId, deptHeadId, nextStatus);
+  const headError = await validateDeptHead(departmentId, deptHeadId, nextStatus, data.categoryId ?? existing.categoryId);
   if (headError) return res.status(400).json({ error: headError });
 
   if (data.invoiceDate) {

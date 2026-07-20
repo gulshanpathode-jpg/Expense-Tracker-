@@ -160,9 +160,26 @@ export default function NewExpensePage() {
   const deptHeads = useMemo(() => selectedDept?.heads ?? [], [selectedDept]);
   const selectedHead = deptHeads.find((h) => h.id === form.deptHeadId);
 
+  // A restricted head only has one valid category — snap to it whenever the
+  // selected head changes (also corrects stale drafts loaded for editing).
+  const restrictedCategoryId = selectedHead?.restrictedCategoryId ?? null;
+  useEffect(() => {
+    if (restrictedCategoryId) {
+      setForm((f) => (f.categoryId === restrictedCategoryId ? f : { ...f, categoryId: restrictedCategoryId }));
+    }
+  }, [restrictedCategoryId]);
+
   const departmentOptions = useMemo(() => departments.map((d) => ({ value: d.id, label: d.name })), [departments]);
   const headOptions = useMemo(() => deptHeads.map((h) => ({ value: h.id, label: h.name })), [deptHeads]);
-  const categoryOptions = useMemo(() => categories.map((c) => ({ value: c.id, label: c.label })), [categories]);
+  // Heads with a category restriction only ever see that one category.
+  const allowedCategories = useMemo(() => {
+    const restricted = selectedHead?.restrictedCategoryId;
+    return restricted ? categories.filter((c) => c.id === restricted) : categories;
+  }, [categories, selectedHead]);
+  const categoryOptions = useMemo(
+    () => allowedCategories.map((c) => ({ value: c.id, label: c.label })),
+    [allowedCategories]
+  );
   const fyOptions = useMemo(() => financialYears.map((fy) => ({ value: fy.id, label: fy.label })), [financialYears]);
   const paymentOptions = useMemo(() => PAYMENT_MODES.map((m) => ({ value: m, label: titleCase(m) })), []);
 

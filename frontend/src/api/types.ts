@@ -14,6 +14,8 @@ export interface DepartmentHead {
   departmentId: string;
   userId: string | null;
   isActive: boolean;
+  // When set, expenses for this head may only use this category.
+  restrictedCategoryId: string | null;
 }
 
 export interface CostCenter {

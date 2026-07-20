@@ -118,6 +118,10 @@ model DepartmentHead {
   user         User?      @relation(fields: [userId], references: [id])
   isActive     Boolean    @default(true)
   createdAt    DateTime   @default(now())
+  // When set, expenses attributed to this head may only use this category
+  // (e.g. Operations heads are limited to the Leadership Discretionary Fund).
+  restrictedCategoryId String?
+  restrictedCategory   AccountsCategory? @relation("HeadCategoryRestriction", fields: [restrictedCategoryId], references: [id])
 
   budgets  Budget[]
   expenses Expense[]
@@ -155,7 +159,8 @@ model AccountsCategory {
   budgetAmount Float   @default(0)
   isActive     Boolean @default(true)
 
-  expenses Expense[]
+  expenses        Expense[]
+  restrictedHeads DepartmentHead[] @relation("HeadCategoryRestriction")
 }
 
 model Budget {

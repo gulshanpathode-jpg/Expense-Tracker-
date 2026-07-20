@@ -34,12 +34,10 @@ npm run prisma:seed    # seeds budget heads, categories, demo users
 npm run dev             # starts API on PORT (default 8002)
 ```
 
-Demo logins (password `Passw0rd!` for all):
-- `admin@exptrack.local` — Admin
-- `depthead@exptrack.local` — Department Head (Engineering)
-- `manager@exptrack.local` — Manager (Engineering, reports to depthead)
-- `employee@exptrack.local` — Employee (Engineering, reports to manager)
-- `accounts@exptrack.local` — Accounts
+Seeded logins (password `Dhaninfo@2026` for all):
+- `admin@dhaninfo.biz` — Admin
+- `vikas.jain@dhaninfo.biz`, `satish@dhaninfo.biz`, … — Department Heads (one login per head, `firstname@dhaninfo.biz`)
+- `employee@dhaninfo.biz` — Employee (Operations)
 
 ### 3. Frontend
 
@@ -77,4 +75,21 @@ Note: if this server already runs other PM2 apps, double-check names don't colli
 - Approval workflow: submitting an expense builds an approver chain from the submitter's manager (level 1) and their department's Department Head (level 2). If neither exists, an active Admin is used as fallback approver. Budget utilization updates only once an expense reaches full approval, and is reversed if an admin deletes an approved expense.
 - File uploads are stored on local disk under `backend/uploads` (swap for S3/MinIO in production). Files are **not** served publicly — attachments and PO quotations are downloaded through authenticated, access-checked endpoints (`GET /api/expenses/attachments/:id`, `GET /api/purchases/orders/:id/quotation`).
 - Auth: refresh tokens are stored (hashed) server-side, rotated on every refresh, and revoked on logout, password change, or user deactivation. Login is rate-limited (10 attempts / 15 min per IP+email). Set `CORS_ORIGIN` in production to lock CORS to your frontend origin.
-- User management (Admin only, API): `POST /api/users`, `PUT /api/users/:id`, `POST /api/users/:id/reset-password`; users can change their own password via `POST /api/auth/change-password`.
+- User management (Admin only, API): `POST /api/users`, `PUT /api/users/:id`, `POST /api/users/:id/reset-password`.
+
+## Password flow
+
+The email-based forgot-password flow is disabled until SendGrid is wired up (the `POST /api/auth/forgot-password` / `reset-password` endpoints still exist but are not reachable from the UI). Passwords are managed in three tiers:
+
+1. **Signed in?** Change your own password on the **Profile page** (`/profile` — click your name at the bottom of the sidebar). Requires the current password; all other sessions are signed out.
+2. **Forgot your password before signing in?** Ask an **admin** — they reset it from Admin Setup → Users → Reset (audited).
+3. **Admin locked out?** Whoever has shell access to the server runs the recovery script:
+
+   ```bash
+   cd backend
+   npm run reset:password -- admin@dhaninfo.biz NewPass123
+   ```
+
+   It updates the password hash directly and signs out all of that user's sessions.
+
+Password policy everywhere: at least 8 characters with a letter and a number.
