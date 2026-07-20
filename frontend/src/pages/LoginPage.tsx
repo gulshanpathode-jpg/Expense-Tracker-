@@ -27,18 +27,10 @@ const FEATURES = [
   },
 ];
 
-const DEMO_PASSWORD = 'Dhaninfo@2026';
-
-const DEMO_ACCOUNTS = [
-  { label: 'Admin', email: 'admin@dhaninfo.biz' },
-  { label: 'Dept Head', email: 'vikas.jain@dhaninfo.biz' },
-  { label: 'Employee', email: 'employee@dhaninfo.biz' },
-];
-
 export default function LoginPage() {
   const navigate = useNavigate();
   const setSession = useAuthStore((s) => s.setSession);
-  const [email, setEmail] = useState('admin@dhaninfo.biz');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -373,33 +365,6 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="my-7 flex items-center gap-3 text-[11px] font-medium tracking-wider text-slate-400 uppercase">
-            <span className="h-px flex-1 bg-slate-200" />
-            Demo accounts
-            <span className="h-px flex-1 bg-slate-200" />
-          </div>
-
-          <div className="flex flex-wrap justify-center gap-1.5">
-            {DEMO_ACCOUNTS.map((a) => (
-              <button
-                key={a.email}
-                type="button"
-                onClick={() => {
-                  setEmail(a.email);
-                  setPassword(DEMO_PASSWORD);
-                  setErrors({});
-                }}
-                className={
-                  email === a.email
-                    ? 'badge bg-brand-600 text-white'
-                    : 'badge cursor-pointer bg-white text-slate-600 ring-1 ring-slate-200 transition-colors hover:bg-slate-50 hover:text-slate-900'
-                }
-              >
-                {a.label}
-              </button>
-            ))}
-          </div>
-          <p className="mt-3 text-center text-xs text-slate-400">Click a role to fill its credentials, then sign in.</p>
             </>
           )}
         </div>

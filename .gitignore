@@ -42,3 +42,4 @@ Thumbs.db
 *.suo
 *.sw?
 *.local
+backups/
