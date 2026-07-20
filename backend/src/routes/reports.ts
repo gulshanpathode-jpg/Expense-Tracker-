@@ -33,9 +33,27 @@ async function periodBounds(period: string | undefined, from?: string, to?: stri
 }
 
 // Head-slice scope: department heads only ever report on their own slice.
+// Admins may narrow department-based reports with optional departmentId /
+// deptHeadId query filters (a head filter implies its department).
 type Scope = { where: Record<string, unknown>; label: string };
-async function scopeFor(user: { role: string; departmentId: string | null; deptHeadId?: string | null }): Promise<Scope> {
-  if (user.role !== 'DEPARTMENT_HEAD') return { where: {}, label: 'All departments' };
+async function scopeFor(
+  user: { role: string; departmentId: string | null; deptHeadId?: string | null },
+  adminFilter?: { departmentId?: string; deptHeadId?: string }
+): Promise<Scope> {
+  if (user.role !== 'DEPARTMENT_HEAD') {
+    if (adminFilter?.deptHeadId) {
+      const head = await prisma.departmentHead.findUnique({
+        where: { id: adminFilter.deptHeadId },
+        include: { department: true },
+      });
+      if (head) return { where: { deptHeadId: head.id }, label: `${head.department.name} — ${head.name}` };
+    }
+    if (adminFilter?.departmentId) {
+      const dept = await prisma.department.findUnique({ where: { id: adminFilter.departmentId } });
+      if (dept) return { where: { departmentId: dept.id }, label: dept.name };
+    }
+    return { where: {}, label: 'All departments' };
+  }
   if (user.deptHeadId) {
     const head = await prisma.departmentHead.findUnique({
       where: { id: user.deptHeadId },
@@ -60,8 +78,11 @@ function periodLabel(period: string | undefined, from?: string, to?: string): st
 
 // Department-wise expense report (a detailed expense register).
 router.get('/department-wise', async (req, res) => {
-  const { period, from, to, format } = req.query;
-  const scope = await scopeFor(req.user!);
+  const { period, from, to, format, departmentId, deptHeadId } = req.query;
+  const scope = await scopeFor(req.user!, {
+    departmentId: departmentId ? String(departmentId) : undefined,
+    deptHeadId: deptHeadId ? String(deptHeadId) : undefined,
+  });
   const invoiceDate = await periodBounds(String(period ?? ''), from as string, to as string);
 
   const rows = await prisma.expense.findMany({
@@ -108,14 +129,16 @@ router.get('/department-wise', async (req, res) => {
 
 // Budget utilization report: allocation vs recorded spend per budget line.
 router.get('/budget-utilization', async (req, res) => {
-  const { fyId, format } = req.query;
+  const { fyId, format, departmentId, deptHeadId } = req.query;
   const user = req.user!;
-  const headWhere = user.role === 'DEPARTMENT_HEAD' && user.deptHeadId ? { deptHeadId: user.deptHeadId } : {};
-  const deptWhere =
-    user.role === 'DEPARTMENT_HEAD' && !user.deptHeadId ? { departmentId: user.departmentId ?? '__none__' } : {};
+  // scope.where carries deptHeadId/departmentId keys, which exist on Budget too.
+  const scope = await scopeFor(user, {
+    departmentId: departmentId ? String(departmentId) : undefined,
+    deptHeadId: deptHeadId ? String(deptHeadId) : undefined,
+  });
 
   const budgets = await prisma.budget.findMany({
-    where: { fyId: fyId ? String(fyId) : undefined, ...headWhere, ...deptWhere },
+    where: { fyId: fyId ? String(fyId) : undefined, ...scope.where },
     include: { department: true, deptHead: true, financialYear: true },
     orderBy: { annualAmount: 'desc' },
   });
@@ -155,7 +178,6 @@ router.get('/budget-utilization', async (req, res) => {
     { header: 'Utilization %', key: 'utilizationPct', width: 14, type: 'percent' },
   ];
 
-  const scope = await scopeFor(user);
   const totalAlloc = data.reduce((s, r) => s + r.allocated, 0);
   const totalUsed = data.reduce((s, r) => s + r.utilized, 0);
   const meta: ReportMeta = {
@@ -290,8 +312,11 @@ router.get('/vendor-spend', async (req, res) => {
 
 // Monthly/Quarterly/Yearly summary by department (admin) or by month (head).
 router.get('/period-summary', async (req, res) => {
-  const { period, from, to, format } = req.query;
-  const scope = await scopeFor(req.user!);
+  const { period, from, to, format, departmentId, deptHeadId } = req.query;
+  const scope = await scopeFor(req.user!, {
+    departmentId: departmentId ? String(departmentId) : undefined,
+    deptHeadId: deptHeadId ? String(deptHeadId) : undefined,
+  });
   const invoiceDate = await periodBounds(String(period ?? 'monthly'), from as string, to as string);
 
   const rows = await prisma.expense.groupBy({
