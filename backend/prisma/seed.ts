@@ -116,8 +116,8 @@ async function main() {
   // Single admin account.
   await prisma.user.upsert({
     where: { email: 'admin@dhaninfo.biz' },
-    update: { role: 'ADMIN', isActive: true },
-    create: { name: 'admin', email: 'admin@dhaninfo.biz', passwordHash: password, role: 'ADMIN' },
+    update: { name: 'Admin', role: 'ADMIN', isActive: true },
+    create: { name: 'Admin', email: 'admin@dhaninfo.biz', passwordHash: password, role: 'ADMIN' },
   });
 
   // Retire any old *.exptrack.local demo accounts from earlier seeds.
