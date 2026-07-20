@@ -23,7 +23,7 @@ const DEPARTMENTS: { name: string; heads: { name: string; email: string; budget:
   { name: 'Administration', heads: [{ name: 'Prashik', email: 'prashik.ingle@dhaninfo.biz', budget: 18531.89 }] },
   { name: 'Artificial Intelligence', heads: [{ name: 'Kanchan', email: 'kanchan.borade@dhaninfo.biz', budget: 8423.59 }] },
   { name: 'Accounts & Finance', heads: [{ name: 'Accounts Head', email: 'accounts@dhaninfo.biz', budget: 5054.15 }] },
-  { name: 'Sales & Marketing', heads: [{ name: 'Rohan', email: 'sales@dhaninfo.biz', budget: 26955.48 }] },
+  { name: 'Sales & Marketing', heads: [{ name: 'Sales Head', email: 'sales@dhaninfo.biz', budget: 26955.48 }] },
 ];
 
 // Categories and their annual budgets from the "Objectives" table in the Excel.
@@ -141,7 +141,7 @@ async function main() {
       const email = h.email;
       const headUser = await prisma.user.upsert({
         where: { email },
-        update: { role: 'DEPARTMENT_HEAD', departmentId: dept.id, isActive: true },
+        update: { name: h.name, role: 'DEPARTMENT_HEAD', departmentId: dept.id, isActive: true },
         create: { name: h.name, email, passwordHash: password, role: 'DEPARTMENT_HEAD', departmentId: dept.id },
       });
 
@@ -173,7 +173,13 @@ async function main() {
       });
       for (const sh of staleHeads) {
         await prisma.departmentHead.update({ where: { id: sh.id }, data: { isActive: false } });
-        if (sh.userId) await prisma.user.update({ where: { id: sh.userId }, data: { isActive: false, departmentId: null } });
+        // Only retire the login user if no active head still points at them —
+        // a renamed head keeps its email, so the same user is already linked
+        // to the freshly upserted record.
+        if (sh.userId) {
+          const stillHead = await prisma.departmentHead.findFirst({ where: { userId: sh.userId, isActive: true } });
+          if (!stillHead) await prisma.user.update({ where: { id: sh.userId }, data: { isActive: false, departmentId: null } });
+        }
       }
     }
   }
