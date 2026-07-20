@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Building2, Tags, Wallet, Plus, Pencil, Check, X, UserPlus, Eye, EyeOff, KeyRound, ShieldCheck } from 'lucide-react';
 import { api } from '../api/client';
-import { useAuthStore } from '../store/authStore';
 import type { AccountsCategory, Budget, Department, DepartmentHead, FinancialYear, UserSummary } from '../api/types';
 import { PageHeader, Modal } from '../components/ui';
 import Select from '../components/Select';
@@ -83,10 +82,6 @@ export default function AdminMastersPage() {
   const [resetting, setResetting] = useState(false);
 
   // Change-my-password
-  const [curPw, setCurPw] = useState('');
-  const [newPw, setNewPw] = useState('');
-  const [newPwConfirm, setNewPwConfirm] = useState('');
-  const [changingPw, setChangingPw] = useState(false);
 
   function loadAll() {
     api.get('/departments').then((r) => setDepartments(r.data));
@@ -282,39 +277,9 @@ export default function AdminMastersPage() {
     }
   }
 
-  async function changeMyPassword() {
-    if (!curPw) {
-      toast.error('Enter your current password');
-      return;
-    }
-    if (!isStrongPassword(newPw)) {
-      toast.error(PASSWORD_HINT);
-      return;
-    }
-    if (newPw !== newPwConfirm) {
-      toast.error('New passwords do not match');
-      return;
-    }
-    setChangingPw(true);
-    try {
-      const res = await api.post('/auth/change-password', { currentPassword: curPw, newPassword: newPw });
-      // The server rotates refresh tokens on password change — keep the new one.
-      const { accessToken, setTokens } = useAuthStore.getState();
-      if (res.data?.refreshToken && accessToken) setTokens(accessToken, res.data.refreshToken);
-      toast.success('Your password has been changed');
-      setCurPw('');
-      setNewPw('');
-      setNewPwConfirm('');
-    } catch (err: any) {
-      toast.error(errText(err) ?? 'Failed to change password');
-    } finally {
-      setChangingPw(false);
-    }
-  }
-
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
-      <PageHeader title="Admin Setup" subtitle="Manage departments, heads, users, categories, budgets, and your password." />
+      <PageHeader title="Admin Setup" subtitle="Manage departments, heads, users, categories, and budgets." />
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <div className="card p-5">
@@ -710,30 +675,6 @@ export default function AdminMastersPage() {
             </table>
           </div>
         )}
-      </div>
-
-      {/* Change my password */}
-      <div className="card p-5">
-        <SectionTitle icon={<KeyRound size={15} />} title="Change My Password" hint="Update the password for your admin account." />
-        <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
-          <div>
-            <label className="label-xs">Current Password</label>
-            <input value={curPw} onChange={(e) => setCurPw(e.target.value)} className="input" type="password" autoComplete="current-password" placeholder="Current password" />
-          </div>
-          <div>
-            <label className="label-xs">New Password</label>
-            <input value={newPw} onChange={(e) => setNewPw(e.target.value)} className="input" type="password" autoComplete="new-password" placeholder={PASSWORD_HINT} />
-            {newPw.length > 0 && !isStrongPassword(newPw) && <p className="mt-1 text-[11px] text-amber-600">{PASSWORD_HINT}</p>}
-          </div>
-          <div>
-            <label className="label-xs">Confirm New Password</label>
-            <input value={newPwConfirm} onChange={(e) => setNewPwConfirm(e.target.value)} className="input" type="password" autoComplete="new-password" placeholder="Re-enter new password" />
-            {newPwConfirm.length > 0 && newPw !== newPwConfirm && <p className="mt-1 text-[11px] text-red-600">Passwords do not match</p>}
-          </div>
-        </div>
-        <button onClick={changeMyPassword} disabled={changingPw} className="btn-primary mt-4">
-          {changingPw ? 'Updating…' : 'Update Password'}
-        </button>
       </div>
 
       <Modal

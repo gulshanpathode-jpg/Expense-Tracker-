@@ -150,8 +150,10 @@ router.post('/change-password', requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({ where: { id: req.user!.sub } });
   if (!user) return res.status(404).json({ error: 'User not found' });
 
+  // 400, not 401 — the session is fine; a 401 would send the frontend's axios
+  // interceptor off to refresh tokens for no reason.
   const valid = await bcrypt.compare(parsed.data.currentPassword, user.passwordHash);
-  if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+  if (!valid) return res.status(400).json({ error: 'Current password is incorrect' });
 
   const passwordHash = await bcrypt.hash(parsed.data.newPassword, 10);
   await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });

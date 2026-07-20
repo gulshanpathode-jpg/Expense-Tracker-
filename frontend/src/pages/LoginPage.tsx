@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import axios from 'axios';
-import { Eye, EyeOff, IndianRupee, ReceiptText, GitBranch, Wallet, LoaderCircle, ArrowLeft, MailCheck } from 'lucide-react';
+import { Eye, EyeOff, IndianRupee, ReceiptText, GitBranch, Wallet, LoaderCircle } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { FieldError } from '../components/ui';
 
@@ -37,67 +37,6 @@ export default function LoginPage() {
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
-
-  // 'login' → normal sign-in; 'forgot' → request a code; 'reset' → enter code + new password.
-  const [view, setView] = useState<'login' | 'forgot' | 'reset'>('login');
-  const [resetEmail, setResetEmail] = useState('');
-  const [resetCode, setResetCode] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [resetLoading, setResetLoading] = useState(false);
-
-  async function requestResetCode(e: FormEvent) {
-    e.preventDefault();
-    if (!EMAIL_RE.test(resetEmail.trim())) {
-      toast.error('Enter a valid email address');
-      return;
-    }
-    setResetLoading(true);
-    try {
-      await axios.post(`${import.meta.env.VITE_API_URL}/auth/forgot-password`, { email: resetEmail.trim() });
-      toast.success('If that email exists, a verification code is on its way');
-      setView('reset');
-    } catch (err: any) {
-      toast.error(err.response?.data?.error ?? 'Could not send the code. Try again.');
-    } finally {
-      setResetLoading(false);
-    }
-  }
-
-  async function submitReset(e: FormEvent) {
-    e.preventDefault();
-    if (!/^\d{6}$/.test(resetCode.trim())) {
-      toast.error('Enter the 6-digit code from the email');
-      return;
-    }
-    if (newPassword.length < 8) {
-      toast.error('New password must be at least 8 characters');
-      return;
-    }
-    if (newPassword !== confirmPassword) {
-      toast.error('Passwords do not match');
-      return;
-    }
-    setResetLoading(true);
-    try {
-      await axios.post(`${import.meta.env.VITE_API_URL}/auth/reset-password`, {
-        email: resetEmail.trim(),
-        code: resetCode.trim(),
-        newPassword,
-      });
-      toast.success('Password updated — sign in with your new password');
-      setEmail(resetEmail.trim());
-      setPassword('');
-      setResetCode('');
-      setNewPassword('');
-      setConfirmPassword('');
-      setView('login');
-    } catch (err: any) {
-      toast.error(err.response?.data?.error ?? 'Could not reset the password');
-    } finally {
-      setResetLoading(false);
-    }
-  }
 
   function validate() {
     const next: { email?: string; password?: string } = {};
@@ -181,116 +120,6 @@ export default function LoginPage() {
             <h1 className="text-lg font-semibold text-slate-900">ExpTrack</h1>
           </div>
 
-          {view === 'forgot' && (
-            <>
-              <h2 className="text-xl font-semibold tracking-tight text-slate-900">Reset your password</h2>
-              <p className="mt-1 mb-7 text-sm text-slate-500">
-                Enter your account email and we'll send a 6-digit verification code.
-              </p>
-              <form onSubmit={requestResetCode} noValidate className="space-y-4">
-                <div>
-                  <label className="label" htmlFor="reset-email">Email</label>
-                  <input
-                    id="reset-email"
-                    type="email"
-                    autoFocus
-                    value={resetEmail}
-                    onChange={(e) => setResetEmail(e.target.value)}
-                    className="input"
-                    placeholder="you@company.com"
-                  />
-                </div>
-                <button type="submit" disabled={resetLoading} className="btn-primary w-full py-2.5">
-                  {resetLoading ? <LoaderCircle size={15} className="animate-spin" /> : <MailCheck size={15} />}
-                  {resetLoading ? 'Sending code...' : 'Send verification code'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setView('login')}
-                  className="mx-auto flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-900"
-                >
-                  <ArrowLeft size={14} />
-                  Back to sign in
-                </button>
-              </form>
-            </>
-          )}
-
-          {view === 'reset' && (
-            <>
-              <h2 className="text-xl font-semibold tracking-tight text-slate-900">Enter the code</h2>
-              <p className="mt-1 mb-7 text-sm text-slate-500">
-                We sent a 6-digit code to <span className="font-medium text-slate-700">{resetEmail}</span>. It expires in 10 minutes.
-              </p>
-              <form onSubmit={submitReset} noValidate className="space-y-4">
-                <div>
-                  <label className="label" htmlFor="reset-code">Verification code</label>
-                  <input
-                    id="reset-code"
-                    inputMode="numeric"
-                    autoFocus
-                    maxLength={6}
-                    value={resetCode}
-                    onChange={(e) => setResetCode(e.target.value.replace(/\D/g, ''))}
-                    className="input num tracking-[0.4em]"
-                    placeholder="000000"
-                  />
-                </div>
-                <div>
-                  <label className="label" htmlFor="reset-new-password">New password</label>
-                  <input
-                    id="reset-new-password"
-                    type="password"
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    className="input"
-                    placeholder="Min 8 characters"
-                    autoComplete="new-password"
-                  />
-                </div>
-                <div>
-                  <label className="label" htmlFor="reset-confirm-password">Confirm new password</label>
-                  <input
-                    id="reset-confirm-password"
-                    type="password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="input"
-                    placeholder="Re-enter new password"
-                    autoComplete="new-password"
-                  />
-                  {confirmPassword.length > 0 && newPassword !== confirmPassword && (
-                    <p className="mt-1 text-[11px] text-red-600">Passwords do not match</p>
-                  )}
-                </div>
-                <button type="submit" disabled={resetLoading} className="btn-primary w-full py-2.5">
-                  {resetLoading && <LoaderCircle size={15} className="animate-spin" />}
-                  {resetLoading ? 'Updating password...' : 'Update password'}
-                </button>
-                <div className="flex items-center justify-between text-sm">
-                  <button
-                    type="button"
-                    onClick={() => setView('forgot')}
-                    className="flex items-center gap-1.5 font-medium text-slate-500 hover:text-slate-900"
-                  >
-                    <ArrowLeft size={14} />
-                    Change email
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => requestResetCode(e as unknown as FormEvent)}
-                    disabled={resetLoading}
-                    className="font-medium text-brand-600 hover:text-brand-700"
-                  >
-                    Resend code
-                  </button>
-                </div>
-              </form>
-            </>
-          )}
-
-          {view === 'login' && (
-            <>
           <h2 className="text-xl font-semibold tracking-tight text-slate-900">Sign in</h2>
           <p className="mt-1 mb-7 text-sm text-slate-500">Welcome back. Enter your details to continue.</p>
 
@@ -347,16 +176,6 @@ export default function LoginPage() {
                 <input type="checkbox" className="rounded border-slate-300 accent-brand-600" defaultChecked />
                 Remember me
               </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setResetEmail(EMAIL_RE.test(email.trim()) ? email.trim() : '');
-                  setView('forgot');
-                }}
-                className="text-xs font-medium text-brand-600 hover:text-brand-700"
-              >
-                Forgot password?
-              </button>
             </div>
 
             <button type="submit" disabled={loading} className="btn-primary w-full py-2.5">
@@ -365,8 +184,9 @@ export default function LoginPage() {
             </button>
           </form>
 
-            </>
-          )}
+          <p className="mt-6 text-center text-xs text-slate-400">
+            Forgot your password? Contact your administrator to reset it.
+          </p>
         </div>
       </div>
     </div>

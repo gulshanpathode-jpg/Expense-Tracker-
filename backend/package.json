@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "ts-node --project prisma/tsconfig.seed.json prisma/seed.ts",
+    "reset:password": "ts-node --project prisma/tsconfig.seed.json scripts/reset-password.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "prisma": {

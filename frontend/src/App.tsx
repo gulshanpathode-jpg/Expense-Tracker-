@@ -10,6 +10,7 @@ import ExpenseDetailPage from './pages/ExpenseDetailPage';
 import AdminMastersPage from './pages/AdminMastersPage';
 import AuditLogPage from './pages/AuditLogPage';
 import ReportsPage from './pages/ReportsPage';
+import ProfilePage from './pages/ProfilePage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const accessToken = useAuthStore((s) => s.accessToken);
@@ -52,6 +53,7 @@ export default function App() {
           <Route path="expenses/new" element={<NewExpensePage />} />
           <Route path="expenses/:id" element={<ExpenseDetailPage />} />
           <Route path="expenses/:id/edit" element={<NewExpensePage />} />
+          <Route path="profile" element={<ProfilePage />} />
           <Route
             path="reports"
             element={

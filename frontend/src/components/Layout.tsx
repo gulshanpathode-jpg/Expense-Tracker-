@@ -126,11 +126,18 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
       <div className="border-t border-sidebar-border p-3">
         <div className="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
-          <Avatar name={user.name} />
-          <div className="min-w-0 flex-1 leading-tight">
-            <p className="truncate text-[13px] font-medium text-white">{user.name}</p>
-            <p className="truncate text-[11px] text-slate-500">{titleCase(user.role)}</p>
-          </div>
+          <Link
+            to="/profile"
+            onClick={onNavigate}
+            className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md transition-colors hover:bg-sidebar-hover"
+            title="My Profile"
+          >
+            <Avatar name={user.name} />
+            <div className="min-w-0 flex-1 leading-tight">
+              <p className="truncate text-[13px] font-medium text-white">{user.name}</p>
+              <p className="truncate text-[11px] text-slate-500">{titleCase(user.role)}</p>
+            </div>
+          </Link>
           <button
             onClick={() => {
               // Revoke the refresh token server-side; local state clears regardless.
