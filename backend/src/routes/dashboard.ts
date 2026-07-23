@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { requireAuth } from '../middleware/auth';
+import { ownerScope } from '../lib/scope';
 
 const router = Router();
 router.use(requireAuth);
@@ -15,8 +16,14 @@ router.get('/summary', async (req, res) => {
   }
 
   const isHead = user.role === 'DEPARTMENT_HEAD';
+  const isOwner = user.role === 'OWNER';
+  // Owners are scoped to their portfolio of heads, which may span departments,
+  // so they key on a head-id set rather than a single department.
+  const ownedHeadIds = isOwner ? (await ownerScope(user.sub)).headIds : null;
   const effectiveDeptId =
-    isHead || user.role === 'MANAGER'
+    isOwner
+      ? undefined
+      : isHead || user.role === 'MANAGER'
       ? user.departmentId ?? undefined
       : departmentId
       ? String(departmentId)
@@ -29,6 +36,7 @@ router.get('/summary', async (req, res) => {
   if (fyId) expenseWhere.fyId = String(fyId);
   if (effectiveDeptId) expenseWhere.departmentId = effectiveDeptId;
   if (effectiveHeadId) expenseWhere.deptHeadId = effectiveHeadId;
+  if (ownedHeadIds) expenseWhere.deptHeadId = { in: ownedHeadIds };
   if (dateFrom || dateTo) {
     expenseWhere.invoiceDate = {};
     if (dateFrom) expenseWhere.invoiceDate.gte = new Date(String(dateFrom));
@@ -40,7 +48,7 @@ router.get('/summary', async (req, res) => {
       where: {
         fyId: fyId ? String(fyId) : undefined,
         departmentId: effectiveDeptId,
-        ...(effectiveHeadId ? { deptHeadId: effectiveHeadId } : {}),
+        ...(ownedHeadIds ? { deptHeadId: { in: ownedHeadIds } } : effectiveHeadId ? { deptHeadId: effectiveHeadId } : {}),
       },
       include: { department: true, deptHead: true },
     }),

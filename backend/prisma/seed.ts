@@ -3,28 +3,43 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
+// Admin accounts. The app supports more than one admin; the "can't remove the
+// last admin" safeguard still applies in the API.
+const ADMINS: { name: string; email: string }[] = [
+  { name: 'Admin', email: 'admin@dhaninfo.biz' },
+  { name: 'Sarvesh Agrawal', email: 'dhancomm@dhaninfo.biz' },
+];
+
+// Portfolio owners (OWNER role) who oversee a set of department heads that can
+// span multiple departments. Heads reference an owner by key via `owner` below.
+const OWNERS: { key: string; name: string; email: string }[] = [
+  { key: 'Rohan', name: 'Rohan', email: 'rohan.bali@dhaninfo.biz' },
+  { key: 'Ram', name: 'Ram', email: 'ram.kukdeja@dhaninfo.biz' },
+];
+
 // Departments, heads, and annual budgets from "Engage 360 data.xlsx".
 // Every department has at least one head, and every head is a login user.
 // Emails are the real dhaninfo.biz mailboxes. Budgets are per department-head.
 // ldfOnly heads may only file expenses under the Leadership Discretionary Fund category.
-const DEPARTMENTS: { name: string; heads: { name: string; email: string; budget: number; ldfOnly?: boolean }[] }[] = [
+// owner (optional) is the OWNER-role user who oversees this head's portfolio.
+const DEPARTMENTS: { name: string; heads: { name: string; email: string; budget: number; ldfOnly?: boolean; owner?: string }[] }[] = [
   {
     name: 'Operations',
     heads: [
-      { name: 'Rakesh', email: 'rakesh@dhaninfo.biz', budget: 375691.94, ldfOnly: true },
-      { name: 'Vikas', email: 'vikas.jain@dhaninfo.biz', budget: 458243.08, ldfOnly: true },
-      { name: 'Solomon', email: 'solomon.david@dhaninfo.biz', budget: 148255.11, ldfOnly: true },
-      { name: 'Ruchita', email: 'rnagmote@dhaninfo.biz', budget: 163417.57, ldfOnly: true },
-      { name: 'Himanshu', email: 'himanshu.bajaj@dhaninfo.biz', budget: 23586.04, ldfOnly: true },
-      { name: 'Ritesh', email: 'ritesh.labde@dhaninfo.biz', budget: 126353.79, ldfOnly: true },
+      { name: 'Rakesh Mishra', email: 'rakesh@dhaninfo.biz', budget: 375691.94, ldfOnly: true, owner: 'Rohan' },
+      { name: 'Vikas Jain', email: 'vikas.jain@dhaninfo.biz', budget: 458243.08, ldfOnly: true, owner: 'Rohan' },
+      { name: 'Solomon David', email: 'solomon.david@dhaninfo.biz', budget: 148255.11, ldfOnly: true, owner: 'Ram' },
+      { name: 'Ruchita Nagmote', email: 'rnagmote@dhaninfo.biz', budget: 163417.57, ldfOnly: true, owner: 'Ram' },
+      { name: 'Himanshu Bajaj', email: 'himanshu.bajaj@dhaninfo.biz', budget: 23586.04, ldfOnly: true, owner: 'Ram' },
+      { name: 'Ritesh Labde', email: 'ritesh.labde@dhaninfo.biz', budget: 126353.79, ldfOnly: true, owner: 'Rohan' },
     ],
   },
-  { name: 'Information Technology', heads: [{ name: 'Satish', email: 'satish@dhaninfo.biz', budget: 21901.32 }] },
-  { name: 'Human Resource', heads: [{ name: 'Abhijeet', email: 'abhijeet.dhawale@dhaninfo.biz', budget: 25270.76 }] },
-  { name: 'Administration', heads: [{ name: 'Prashik', email: 'prashik.ingle@dhaninfo.biz', budget: 18531.89 }] },
-  { name: 'Artificial Intelligence', heads: [{ name: 'Kanchan', email: 'kanchan.borade@dhaninfo.biz', budget: 8423.59, ldfOnly: true }] },
+  { name: 'Information Technology', heads: [{ name: 'Satish Bhopale', email: 'satish@dhaninfo.biz', budget: 21901.32 }] },
+  { name: 'Human Resource', heads: [{ name: 'Abhijeet Dhawale', email: 'abhijeet.dhawale@dhaninfo.biz', budget: 25270.76 }] },
+  { name: 'Administration', heads: [{ name: 'Prashik Ingle', email: 'prashik.ingle@dhaninfo.biz', budget: 18531.89 }] },
+  { name: 'Artificial Intelligence', heads: [{ name: 'Kanchan Borade', email: 'kanchan.borade@dhaninfo.biz', budget: 8423.59, ldfOnly: true, owner: 'Ram' }] },
   { name: 'Accounts & Finance', heads: [{ name: 'Accounts Head', email: 'accounts@dhaninfo.biz', budget: 5054.15 }] },
-  { name: 'Sales & Marketing', heads: [{ name: 'Sales Head', email: 'sales@dhaninfo.biz', budget: 26955.48 }] },
+  { name: 'Sales & Marketing', heads: [{ name: 'Sales Head', email: 'sales@dhaninfo.biz', budget: 26955.48, owner: 'Ram' }] },
 ];
 
 // Categories and their annual budgets from the "Objectives" table in the Excel.
@@ -116,18 +131,32 @@ async function main() {
 
   const password = await bcrypt.hash(DEFAULT_PASSWORD, 10);
 
-  // Single admin account.
-  await prisma.user.upsert({
-    where: { email: 'admin@dhaninfo.biz' },
-    update: { name: 'Admin', role: 'ADMIN', isActive: true },
-    create: { name: 'Admin', email: 'admin@dhaninfo.biz', passwordHash: password, role: 'ADMIN' },
-  });
+  // Admin accounts.
+  for (const a of ADMINS) {
+    await prisma.user.upsert({
+      where: { email: a.email },
+      update: { name: a.name, role: 'ADMIN', isActive: true },
+      create: { name: a.name, email: a.email, passwordHash: password, role: 'ADMIN' },
+    });
+  }
 
   // Retire any old *.exptrack.local demo accounts from earlier seeds.
   await prisma.user.updateMany({
     where: { email: { endsWith: '@exptrack.local' } },
     data: { isActive: false, departmentId: null },
   });
+
+  // Portfolio owners (OWNER role). Not attached to a department — they oversee
+  // heads across departments via DepartmentHead.ownerId (set in the head loop).
+  const ownerIds = new Map<string, string>();
+  for (const o of OWNERS) {
+    const ownerUser = await prisma.user.upsert({
+      where: { email: o.email },
+      update: { name: o.name, role: 'OWNER', departmentId: null, isActive: true },
+      create: { name: o.name, email: o.email, passwordHash: password, role: 'OWNER' },
+    });
+    ownerIds.set(o.key, ownerUser.id);
+  }
 
   const deptIds = new Map<string, string>();
 
@@ -148,12 +177,13 @@ async function main() {
         create: { name: h.name, email, passwordHash: password, role: 'DEPARTMENT_HEAD', departmentId: dept.id },
       });
 
-      // Head record, linked to the user.
+      // Head record, linked to the user and (optionally) a portfolio owner.
       const restrictedCategoryId = h.ldfOnly ? ldf.id : null;
+      const ownerId = h.owner ? ownerIds.get(h.owner) ?? null : null;
       const head = await prisma.departmentHead.upsert({
         where: { departmentId_name: { departmentId: dept.id, name: h.name } },
-        update: { isActive: true, userId: headUser.id, restrictedCategoryId },
-        create: { departmentId: dept.id, name: h.name, userId: headUser.id, restrictedCategoryId },
+        update: { isActive: true, userId: headUser.id, restrictedCategoryId, ownerId },
+        create: { departmentId: dept.id, name: h.name, userId: headUser.id, restrictedCategoryId, ownerId },
       });
 
       // Budget allocation for this head (annual split evenly across 12 months).
@@ -199,7 +229,8 @@ async function main() {
   const [users, budgets] = await Promise.all([prisma.user.count({ where: { isActive: true } }), prisma.budget.count()]);
   console.log(`Seed complete. ${users} active users, ${budgets} budget allocations, 0 expenses.`);
   console.log(`Logins (password: ${DEFAULT_PASSWORD}):`);
-  console.log('  Admin:      admin@dhaninfo.biz');
+  console.log('  Admins:     admin@dhaninfo.biz, dhancomm@dhaninfo.biz');
+  console.log('  Owners:     rohan.bali@dhaninfo.biz, ram.kukdeja@dhaninfo.biz');
   console.log('  Dept heads: vikas.jain@dhaninfo.biz, sales@dhaninfo.biz, satish@dhaninfo.biz, …');
   console.log('  Employee:   employee@dhaninfo.biz');
 }

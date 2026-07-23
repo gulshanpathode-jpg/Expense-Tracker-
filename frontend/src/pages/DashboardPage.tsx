@@ -103,6 +103,7 @@ function buildQuickRanges(fy: FinancialYear | undefined): { key: string; label: 
 export default function DashboardPage() {
   const user = useAuthStore((s) => s.user);
   const isHead = user?.role === 'DEPARTMENT_HEAD';
+  const isOwner = user?.role === 'OWNER';
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -177,10 +178,12 @@ export default function DashboardPage() {
     <div className="mx-auto max-w-7xl p-6">
       <div className="mb-6">
         <h1 className="text-xl font-semibold tracking-tight text-slate-900">
-          {isHead ? `${user?.name?.split(' ')[0]}'s Dashboard` : 'Admin Dashboard'}
+          {isHead || isOwner ? `${user?.name?.split(' ')[0]}'s ${isOwner ? 'Portfolio' : 'Dashboard'}` : 'Admin Dashboard'}
         </h1>
         <p className="mt-0.5 text-sm text-slate-500">
-          {isHead
+          {isOwner
+            ? 'Budgets and spending across the heads you oversee.'
+            : isHead
             ? 'Your budget and spending at a glance.'
             : 'Company-wide Engage360 budgets and spending at a glance.'}
         </p>
@@ -250,7 +253,7 @@ export default function DashboardPage() {
           {/* Stat tiles */}
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
-              label={isHead ? 'My Budget' : 'Total Budget'}
+              label={isHead ? 'My Budget' : isOwner ? 'Portfolio Budget' : 'Total Budget'}
               value={money(summary.totalBudget)}
               caption={fyId ? undefined : 'across all financial years'}
               icon={<Wallet size={17} />}

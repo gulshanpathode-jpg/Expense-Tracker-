@@ -2,11 +2,13 @@ import { Router } from 'express';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { sendExport, ReportColumn, ReportMeta } from '../lib/exporter';
+import { ownerScope } from '../lib/scope';
 
 const router = Router();
-// Reporting is available to Admin (company-wide) and Department Heads (scoped to
-// their own head-slice). Employees have no reports.
-router.use(requireAuth, requireRole('ADMIN', 'DEPARTMENT_HEAD'));
+// Reporting is available to Admin (company-wide), Department Heads (scoped to
+// their own head-slice), and Owners (scoped to their portfolio of heads).
+// Employees have no reports.
+router.use(requireAuth, requireRole('ADMIN', 'DEPARTMENT_HEAD', 'OWNER'));
 
 async function periodBounds(period: string | undefined, from?: string, to?: string) {
   if (from || to) {
@@ -37,16 +39,44 @@ async function periodBounds(period: string | undefined, from?: string, to?: stri
 // deptHeadId query filters (a head filter implies its department).
 type Scope = { where: Record<string, unknown>; label: string };
 async function scopeFor(
-  user: { role: string; departmentId: string | null; deptHeadId?: string | null },
-  adminFilter?: { departmentId?: string; deptHeadId?: string }
+  user: { sub: string; role: string; departmentId: string | null; deptHeadId?: string | null },
+  adminFilter?: { departmentId?: string; deptHeadId?: string; ownerId?: string }
 ): Promise<Scope> {
+  // Owners report on their portfolio of heads (may span departments). They may
+  // narrow to a specific owned head or a department they span, but never widen
+  // outside their portfolio.
+  if (user.role === 'OWNER') {
+    const { headIds } = await ownerScope(user.sub);
+    if (adminFilter?.deptHeadId && headIds.includes(adminFilter.deptHeadId)) {
+      const head = await prisma.departmentHead.findUnique({
+        where: { id: adminFilter.deptHeadId },
+        include: { department: true },
+      });
+      return { where: { deptHeadId: adminFilter.deptHeadId }, label: head ? `${head.department.name} — ${head.name}` : 'My head' };
+    }
+    if (adminFilter?.departmentId) {
+      const heads = await prisma.departmentHead.findMany({
+        where: { ownerId: user.sub, isActive: true, departmentId: adminFilter.departmentId },
+        select: { id: true },
+      });
+      const dept = await prisma.department.findUnique({ where: { id: adminFilter.departmentId } });
+      return { where: { deptHeadId: { in: heads.map((h) => h.id) } }, label: dept ? `${dept.name} (portfolio)` : 'My portfolio' };
+    }
+    return { where: { deptHeadId: { in: headIds } }, label: 'My portfolio' };
+  }
   if (user.role !== 'DEPARTMENT_HEAD') {
+    // Precedence: a specific head, else an owner's portfolio, else a department.
     if (adminFilter?.deptHeadId) {
       const head = await prisma.departmentHead.findUnique({
         where: { id: adminFilter.deptHeadId },
         include: { department: true },
       });
       if (head) return { where: { deptHeadId: head.id }, label: `${head.department.name} — ${head.name}` };
+    }
+    if (adminFilter?.ownerId) {
+      const owner = await prisma.user.findUnique({ where: { id: adminFilter.ownerId } });
+      const { headIds } = await ownerScope(adminFilter.ownerId);
+      return { where: { deptHeadId: { in: headIds } }, label: owner ? `Owner — ${owner.name}` : 'Owner portfolio' };
     }
     if (adminFilter?.departmentId) {
       const dept = await prisma.department.findUnique({ where: { id: adminFilter.departmentId } });
@@ -78,10 +108,11 @@ function periodLabel(period: string | undefined, from?: string, to?: string): st
 
 // Department-wise expense report (a detailed expense register).
 router.get('/department-wise', async (req, res) => {
-  const { period, from, to, format, departmentId, deptHeadId } = req.query;
+  const { period, from, to, format, departmentId, deptHeadId, ownerId } = req.query;
   const scope = await scopeFor(req.user!, {
     departmentId: departmentId ? String(departmentId) : undefined,
     deptHeadId: deptHeadId ? String(deptHeadId) : undefined,
+    ownerId: ownerId ? String(ownerId) : undefined,
   });
   const invoiceDate = await periodBounds(String(period ?? ''), from as string, to as string);
 
@@ -129,12 +160,13 @@ router.get('/department-wise', async (req, res) => {
 
 // Budget utilization report: allocation vs recorded spend per budget line.
 router.get('/budget-utilization', async (req, res) => {
-  const { fyId, format, departmentId, deptHeadId } = req.query;
+  const { fyId, format, departmentId, deptHeadId, ownerId } = req.query;
   const user = req.user!;
   // scope.where carries deptHeadId/departmentId keys, which exist on Budget too.
   const scope = await scopeFor(user, {
     departmentId: departmentId ? String(departmentId) : undefined,
     deptHeadId: deptHeadId ? String(deptHeadId) : undefined,
+    ownerId: ownerId ? String(ownerId) : undefined,
   });
 
   const budgets = await prisma.budget.findMany({
@@ -312,10 +344,11 @@ router.get('/vendor-spend', async (req, res) => {
 
 // Monthly/Quarterly/Yearly summary by department (admin) or by month (head).
 router.get('/period-summary', async (req, res) => {
-  const { period, from, to, format, departmentId, deptHeadId } = req.query;
+  const { period, from, to, format, departmentId, deptHeadId, ownerId } = req.query;
   const scope = await scopeFor(req.user!, {
     departmentId: departmentId ? String(departmentId) : undefined,
     deptHeadId: deptHeadId ? String(deptHeadId) : undefined,
+    ownerId: ownerId ? String(ownerId) : undefined,
   });
   const invoiceDate = await periodBounds(String(period ?? 'monthly'), from as string, to as string);
 

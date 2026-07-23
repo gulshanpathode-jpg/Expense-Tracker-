@@ -19,8 +19,9 @@ import NotificationBell from './NotificationBell';
 import { Avatar } from './ui';
 import { titleCase } from '../lib/format';
 
-const ALL_ROLES = ['ADMIN', 'DEPARTMENT_HEAD', 'EMPLOYEE'];
-const STAFF = ['ADMIN', 'DEPARTMENT_HEAD']; // roles with reporting/dashboard access
+// Owners can now file expenses within their portfolio, so they share the spend roles.
+const SPEND = ['ADMIN', 'DEPARTMENT_HEAD', 'EMPLOYEE', 'OWNER']; // view + file expenses
+const STAFF = ['ADMIN', 'DEPARTMENT_HEAD', 'OWNER']; // roles with reporting/dashboard access
 
 const navSections: {
   heading: string | null;
@@ -33,8 +34,8 @@ const navSections: {
   {
     heading: 'Spend',
     items: [
-      { to: '/expenses', label: 'Expenses', end: true, roles: ALL_ROLES, icon: ReceiptText },
-      { to: '/expenses/new', label: 'Add Expense', end: true, roles: ALL_ROLES, icon: CirclePlus },
+      { to: '/expenses', label: 'Expenses', end: true, roles: SPEND, icon: ReceiptText },
+      { to: '/expenses/new', label: 'Add Expense', end: true, roles: SPEND, icon: CirclePlus },
     ],
   },
   {

@@ -14,6 +14,8 @@ const PAYMENT_MODES: PaymentMode[] = ['CREDIT_CARD', 'DEBIT_CARD', 'UPI', 'BANK_
 const PAGE_SIZE = 25;
 
 const canSeeDepartments = (role?: string) => role === 'ADMIN' || role === 'ACCOUNTS';
+// ACCOUNTS is the only fully read-only role; owners can file within their portfolio.
+const canAddExpense = (role?: string) => role !== 'ACCOUNTS';
 
 export default function ExpensesPage() {
   const user = useAuthStore((s) => s.user);
@@ -117,10 +119,12 @@ export default function ExpensesPage() {
         title="Expenses"
         subtitle="All recorded expenses across your scope."
         actions={
-          <Link to="/expenses/new" className="btn-primary">
-            <Plus size={15} />
-            Add Expense
-          </Link>
+          canAddExpense(user?.role) ? (
+            <Link to="/expenses/new" className="btn-primary">
+              <Plus size={15} />
+              Add Expense
+            </Link>
+          ) : undefined
         }
       />
 
@@ -340,12 +344,14 @@ export default function ExpensesPage() {
           <EmptyState
             icon={<ReceiptText size={20} />}
             title="No expenses found"
-            hint="Try clearing the filters, or add your first expense."
+            hint={canAddExpense(user?.role) ? 'Try clearing the filters, or add your first expense.' : 'Try clearing the filters.'}
             action={
-              <Link to="/expenses/new" className="btn-secondary btn-sm">
-                <Plus size={13} />
-                Add Expense
-              </Link>
+              canAddExpense(user?.role) ? (
+                <Link to="/expenses/new" className="btn-secondary btn-sm">
+                  <Plus size={13} />
+                  Add Expense
+                </Link>
+              ) : undefined
             }
           />
         )}

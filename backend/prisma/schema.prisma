@@ -10,6 +10,7 @@ datasource db {
 enum Role {
   ADMIN
   DEPARTMENT_HEAD
+  OWNER
   MANAGER
   ACCOUNTS
   EMPLOYEE
@@ -68,6 +69,8 @@ model User {
   refreshTokens      RefreshToken[]
   passwordResetCodes PasswordResetCode[]
   headOf             DepartmentHead[]
+  // Department heads this user oversees as their portfolio owner (OWNER role).
+  ownedHeads         DepartmentHead[]    @relation("HeadOwner")
 
   purchaseRequestsMade     PurchaseRequest[]       @relation("PRRequester")
   purchaseRequestsApproved PurchaseRequest[]       @relation("PRApprover")
@@ -116,6 +119,10 @@ model DepartmentHead {
   department   Department @relation(fields: [departmentId], references: [id])
   userId       String?
   user         User?      @relation(fields: [userId], references: [id])
+  // Portfolio owner (OWNER role) who oversees this head across departments.
+  // A head belongs to at most one owner; an owner may span many departments.
+  ownerId      String?
+  owner        User?      @relation("HeadOwner", fields: [ownerId], references: [id])
   isActive     Boolean    @default(true)
   createdAt    DateTime   @default(now())
   // When set, expenses attributed to this head may only use this category

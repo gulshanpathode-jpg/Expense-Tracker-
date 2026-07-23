@@ -16,6 +16,9 @@ export interface DepartmentHead {
   isActive: boolean;
   // When set, expenses for this head may only use this category.
   restrictedCategoryId: string | null;
+  // Portfolio owner (OWNER role) overseeing this head, if any.
+  ownerId?: string | null;
+  owner?: { id: string; name: string } | null;
 }
 
 export interface CostCenter {

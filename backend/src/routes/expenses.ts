@@ -7,6 +7,7 @@ import { writeAudit } from '../lib/audit';
 import { blockReadOnly } from '../middleware/readOnly';
 import { upload, resolveUploadPath } from '../lib/uploads';
 import { checkDepartmentBudgetThreshold } from '../lib/notify';
+import { ownerScope } from '../lib/scope';
 
 const router = Router();
 router.use(requireAuth);
@@ -71,7 +72,8 @@ async function validateDeptHead(
 // no linked head record falls back to department-level scope.
 function canViewExpense(
   user: { sub: string; role: string; departmentId: string | null; deptHeadId?: string | null },
-  expense: { userId: string; departmentId: string; deptHeadId?: string | null }
+  expense: { userId: string; departmentId: string; deptHeadId?: string | null },
+  ownedHeads?: Set<string>
 ): boolean {
   if (user.role === 'ADMIN' || user.role === 'ACCOUNTS') return true;
   if (expense.userId === user.sub) return true;
@@ -81,6 +83,10 @@ function canViewExpense(
   }
   if (user.role === 'MANAGER') {
     return !!user.departmentId && expense.departmentId === user.departmentId;
+  }
+  // Owners see any expense filed against a head in their portfolio.
+  if (user.role === 'OWNER') {
+    return !!expense.deptHeadId && !!ownedHeads?.has(expense.deptHeadId);
   }
   return false;
 }
@@ -144,6 +150,11 @@ router.get('/', async (req, res) => {
     } else {
       where.departmentId = user.departmentId ?? undefined;
     }
+  } else if (user.role === 'OWNER') {
+    // Owners see every expense filed against a head in their portfolio, which
+    // may span departments. An empty portfolio matches nothing.
+    const { headIds } = await ownerScope(user.sub);
+    where.AND = [...(where.AND ?? []), { deptHeadId: { in: headIds } }];
   } else if ((user.role === 'ADMIN' || user.role === 'ACCOUNTS') && departmentId) {
     where.departmentId = String(departmentId);
   }
@@ -186,7 +197,8 @@ router.get('/attachments/:attachmentId', async (req, res) => {
     include: { expense: { select: { userId: true, departmentId: true, deptHeadId: true } } },
   });
   if (!attachment) return res.status(404).json({ error: 'Attachment not found' });
-  if (!canViewExpense(req.user!, attachment.expense)) {
+  const ownedHeads = req.user!.role === 'OWNER' ? new Set((await ownerScope(req.user!.sub)).headIds) : undefined;
+  if (!canViewExpense(req.user!, attachment.expense, ownedHeads)) {
     return res.status(403).json({ error: 'You do not have access to this attachment' });
   }
 
@@ -211,7 +223,8 @@ router.get('/:id', async (req, res) => {
     },
   });
   if (!expense) return res.status(404).json({ error: 'Expense not found' });
-  if (!canViewExpense(req.user!, expense)) {
+  const ownedHeads = req.user!.role === 'OWNER' ? new Set((await ownerScope(req.user!.sub)).headIds) : undefined;
+  if (!canViewExpense(req.user!, expense, ownedHeads)) {
     return res.status(403).json({ error: 'You do not have access to this expense' });
   }
   // Drafts are private to their creator (admins excepted).
@@ -230,13 +243,27 @@ router.post('/', blockReadOnly, upload.array('attachments', 10), async (req, res
   // Non-admins can only file against their OWN department (and heads against
   // their own head-slice) — enforced here regardless of what the client sends,
   // so the UI lock can't be bypassed with a crafted request.
-  let departmentId = data.departmentId || user.departmentId;
-  if (user.role !== 'ADMIN' && user.departmentId) departmentId = user.departmentId;
+  const status = data.status ?? 'SUBMITTED';
+  let departmentId = data.departmentId || user.departmentId || null;
+  let deptHeadId = data.deptHeadId || null;
+
+  if (user.role === 'DEPARTMENT_HEAD') {
+    if (user.departmentId) departmentId = user.departmentId;
+    if (user.deptHeadId) deptHeadId = user.deptHeadId;
+  } else if (user.role === 'OWNER') {
+    // Owners file against a head in their portfolio; the department follows the
+    // head so spend always rolls up to the right slice.
+    if (!deptHeadId) return res.status(400).json({ error: 'Select which head in your portfolio this expense is for' });
+    const { headIds } = await ownerScope(user.sub);
+    if (!headIds.includes(deptHeadId)) return res.status(403).json({ error: 'That head is not in your portfolio' });
+    const head = await prisma.departmentHead.findUnique({ where: { id: deptHeadId } });
+    departmentId = head!.departmentId;
+  } else if (user.role !== 'ADMIN' && user.departmentId) {
+    departmentId = user.departmentId;
+  }
+
   if (!departmentId) return res.status(400).json({ error: 'Department is required' });
 
-  const status = data.status ?? 'SUBMITTED';
-  let deptHeadId = data.deptHeadId || null;
-  if (user.role === 'DEPARTMENT_HEAD' && user.deptHeadId) deptHeadId = user.deptHeadId;
   const headError = await validateDeptHead(departmentId, deptHeadId, status, data.categoryId);
   if (headError) return res.status(400).json({ error: headError });
 
@@ -318,7 +345,12 @@ router.post('/', blockReadOnly, upload.array('attachments', 10), async (req, res
 router.put('/:id', blockReadOnly, async (req, res) => {
   const existing = await prisma.expense.findUnique({ where: { id: String(req.params.id) } });
   if (!existing) return res.status(404).json({ error: 'Expense not found' });
-  if (existing.userId !== req.user!.sub && req.user!.role !== 'ADMIN') {
+  // Owners may edit any expense filed against a head in their portfolio.
+  const ownerOwns =
+    req.user!.role === 'OWNER' &&
+    !!existing.deptHeadId &&
+    (await ownerScope(req.user!.sub)).headIds.includes(existing.deptHeadId);
+  if (existing.userId !== req.user!.sub && req.user!.role !== 'ADMIN' && !ownerOwns) {
     return res.status(403).json({ error: 'Cannot edit another user\'s expense' });
   }
 
@@ -337,6 +369,17 @@ router.put('/:id', blockReadOnly, async (req, res) => {
   // Non-admins can't move an expense out of their own department/head-slice.
   if (req.user!.role !== 'ADMIN' && req.user!.departmentId) departmentId = req.user!.departmentId;
   if (req.user!.role === 'DEPARTMENT_HEAD' && req.user!.deptHeadId) deptHeadId = req.user!.deptHeadId;
+  // Owners keep the expense on a head in their portfolio; department follows it.
+  if (req.user!.role === 'OWNER') {
+    const { headIds } = await ownerScope(req.user!.sub);
+    const targetHead = deptHeadId ?? existing.deptHeadId;
+    if (!targetHead || !headIds.includes(targetHead)) {
+      return res.status(400).json({ error: 'Select a head in your portfolio' });
+    }
+    deptHeadId = targetHead;
+    const head = await prisma.departmentHead.findUnique({ where: { id: targetHead } });
+    departmentId = head!.departmentId;
+  }
   // Re-validate the head when submitting, or when dept/head changed.
   const headError = await validateDeptHead(departmentId, deptHeadId, nextStatus, data.categoryId ?? existing.categoryId);
   if (headError) return res.status(400).json({ error: headError });
@@ -392,13 +435,17 @@ router.put('/:id', blockReadOnly, async (req, res) => {
 });
 
 // Admins can delete any expense; department heads can delete expenses within
-// their own head-slice.
+// their own head-slice; owners within their portfolio.
 router.delete('/:id', blockReadOnly, async (req, res) => {
   const user = req.user!;
   const existing = await prisma.expense.findUnique({ where: { id: String(req.params.id) } });
   if (!existing) return res.status(404).json({ error: 'Expense not found' });
 
-  const allowed = user.role === 'ADMIN' || headOwnsExpense(user, existing);
+  const ownerOwns =
+    user.role === 'OWNER' &&
+    !!existing.deptHeadId &&
+    (await ownerScope(user.sub)).headIds.includes(existing.deptHeadId);
+  const allowed = user.role === 'ADMIN' || headOwnsExpense(user, existing) || ownerOwns;
   if (!allowed) {
     return res.status(403).json({ error: 'You do not have permission to delete this expense' });
   }

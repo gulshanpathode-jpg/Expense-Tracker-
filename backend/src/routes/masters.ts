@@ -26,7 +26,13 @@ router.get('/departments', async (_req, res) => {
   res.json(
     await prisma.department.findMany({
       orderBy: { name: 'asc' },
-      include: { heads: { where: { isActive: true }, orderBy: { name: 'asc' } } },
+      include: {
+        heads: {
+          where: { isActive: true },
+          orderBy: { name: 'asc' },
+          include: { owner: { select: { id: true, name: true } } },
+        },
+      },
     })
   );
 });
@@ -85,7 +91,7 @@ router.get('/department-heads', async (req, res) => {
 });
 
 router.post('/department-heads', requireRole('ADMIN'), async (req, res) => {
-  const { departmentId, name, userId } = req.body ?? {};
+  const { departmentId, name, userId, ownerId } = req.body ?? {};
   if (!departmentId || !name?.trim()) {
     return res.status(400).json({ error: 'departmentId and name are required' });
   }
@@ -102,16 +108,23 @@ router.post('/department-heads', requireRole('ADMIN'), async (req, res) => {
   }
 
   const head = await prisma.departmentHead.create({
-    data: { departmentId: dept.id, name: name.trim(), userId: userId || null },
+    data: { departmentId: dept.id, name: name.trim(), userId: userId || null, ownerId: ownerId || null },
   });
   await writeAudit(req.user!.sub, 'CREATE', 'DepartmentHead', head.id, undefined, head, req.ip);
   res.status(201).json(head);
 });
 
 router.put('/department-heads/:id', requireRole('ADMIN'), async (req, res) => {
-  const { name, isActive, userId } = req.body ?? {};
+  const { name, isActive, userId, ownerId } = req.body ?? {};
   const existing = await prisma.departmentHead.findUnique({ where: { id: String(req.params.id) } });
   if (!existing) return res.status(404).json({ error: 'Department head not found' });
+
+  // ownerId: an empty string or null clears the owner; a value sets it; undefined leaves it.
+  const nextOwnerId = ownerId === null || ownerId === '' ? null : ownerId || undefined;
+  if (typeof nextOwnerId === 'string') {
+    const owner = await prisma.user.findUnique({ where: { id: nextOwnerId } });
+    if (!owner || owner.role !== 'OWNER') return res.status(400).json({ error: 'Selected owner is not an owner account' });
+  }
 
   const head = await prisma.departmentHead.update({
     where: { id: existing.id },
@@ -119,6 +132,7 @@ router.put('/department-heads/:id', requireRole('ADMIN'), async (req, res) => {
       name: typeof name === 'string' && name.trim() ? name.trim() : undefined,
       isActive: typeof isActive === 'boolean' ? isActive : undefined,
       userId: userId === null ? null : userId || undefined,
+      ownerId: nextOwnerId,
     },
   });
   await writeAudit(req.user!.sub, 'UPDATE', 'DepartmentHead', head.id, existing, head, req.ip);
@@ -254,13 +268,13 @@ router.get('/users', requireRole('ADMIN'), async (_req, res) => {
   );
 });
 
-// The app now uses three roles; MANAGER/ACCOUNTS remain in the DB enum for
-// legacy rows but can't be assigned to new users.
+// Assignable roles: Admin, Owner (portfolio oversight), Department Head, and
+// Employee. MANAGER/ACCOUNTS remain in the DB enum for legacy rows only.
 const userCreateSchema = z.object({
   name: z.string().min(1),
   email: z.string().email(),
   password: passwordSchema,
-  role: z.enum(['ADMIN', 'DEPARTMENT_HEAD', 'EMPLOYEE']).default('EMPLOYEE'),
+  role: z.enum(['ADMIN', 'OWNER', 'DEPARTMENT_HEAD', 'EMPLOYEE']).default('EMPLOYEE'),
   departmentId: z.string().uuid().optional().nullable(),
   // For DEPARTMENT_HEAD users: the existing head record to link them to.
   deptHeadId: z.string().uuid().optional().nullable(),
@@ -314,7 +328,7 @@ router.post('/users', requireRole('ADMIN'), async (req, res) => {
 
 const userUpdateSchema = z.object({
   name: z.string().min(1).optional(),
-  role: z.enum(['ADMIN', 'DEPARTMENT_HEAD', 'EMPLOYEE']).optional(),
+  role: z.enum(['ADMIN', 'OWNER', 'DEPARTMENT_HEAD', 'EMPLOYEE']).optional(),
   departmentId: z.string().uuid().optional().nullable(),
   isActive: z.boolean().optional(),
 });

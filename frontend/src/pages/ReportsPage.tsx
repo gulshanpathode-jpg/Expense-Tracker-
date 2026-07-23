@@ -65,6 +65,46 @@ const ADMIN_REPORTS: ReportDef[] = [
   },
 ];
 
+// Reports for a portfolio owner, scoped to the heads they oversee. Dept-
+// filterable reports let owners narrow to one department (or head) they own.
+const OWNER_REPORTS: ReportDef[] = [
+  {
+    key: 'department-wise',
+    label: 'Portfolio Expense Report',
+    description: 'A detailed register of every expense across the heads you oversee, with department, category, vendor and GST columns.',
+    icon: Building2,
+    supportsPeriod: true,
+    supportsDeptFilter: true,
+  },
+  {
+    key: 'budget-utilization',
+    label: 'Portfolio Budget Utilization',
+    description: 'Allocated vs utilized vs remaining and utilization % for each head in your portfolio.',
+    icon: Wallet,
+    supportsDeptFilter: true,
+  },
+  {
+    key: 'category-wise',
+    label: 'Portfolio Category Spend',
+    description: 'Spend and share-of-spend by category across your portfolio.',
+    icon: Users,
+  },
+  {
+    key: 'vendor-spend',
+    label: 'Portfolio Vendor Spend',
+    description: 'Total spend, count and average per vendor across the heads you oversee.',
+    icon: Store,
+  },
+  {
+    key: 'period-summary',
+    label: 'Portfolio Period Summary',
+    description: 'Portfolio spend and share-of-spend for the selected period.',
+    icon: CalendarRange,
+    supportsPeriod: true,
+    supportsDeptFilter: true,
+  },
+];
+
 // Reports for a department head, scoped to their own head-slice.
 const HEAD_REPORTS: ReportDef[] = [
   {
@@ -104,12 +144,13 @@ async function downloadReport(
   key: string,
   format: 'xlsx' | 'csv',
   period?: string,
-  deptFilter?: { departmentId?: string; deptHeadId?: string }
+  deptFilter?: { departmentId?: string; deptHeadId?: string; ownerId?: string }
 ) {
   const params: Record<string, string> = { format };
   if (period) params.period = period;
   if (deptFilter?.departmentId) params.departmentId = deptFilter.departmentId;
   if (deptFilter?.deptHeadId) params.deptHeadId = deptFilter.deptHeadId;
+  if (deptFilter?.ownerId) params.ownerId = deptFilter.ownerId;
   const res = await api.get(`/reports/${key}`, { params, responseType: 'blob' });
   const url = URL.createObjectURL(res.data);
   const a = document.createElement('a');
@@ -124,24 +165,39 @@ async function downloadReport(
 export default function ReportsPage() {
   const user = useAuthStore((s) => s.user);
   const isHead = user?.role === 'DEPARTMENT_HEAD';
-  const reports = isHead ? HEAD_REPORTS : ADMIN_REPORTS;
+  const isOwner = user?.role === 'OWNER';
+  const reports = isHead ? HEAD_REPORTS : isOwner ? OWNER_REPORTS : ADMIN_REPORTS;
 
   const [period, setPeriod] = useState('monthly');
   const [downloading, setDownloading] = useState<string | null>(null);
 
-  // Admin-only department/head filter for department-based reports.
+  // Department/head filter for department-based reports. Admins also get an
+  // owner filter; owners get a filter scoped to their own portfolio.
   const isAdmin = user?.role === 'ADMIN';
+  const canDeptFilter = isAdmin || isOwner;
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [owners, setOwners] = useState<{ id: string; name: string }[]>([]);
   const [deptFilter, setDeptFilter] = useState(''); // '' = all departments
   const [headFilter, setHeadFilter] = useState(''); // '' = all heads
+  const [ownerFilter, setOwnerFilter] = useState(''); // '' = all owners (admin only)
 
   useEffect(() => {
-    if (!isAdmin) return;
-    api.get('/departments').then((res) => setDepartments(res.data.filter((d: Department) => d.isActive)));
-  }, [isAdmin]);
+    if (!canDeptFilter) return;
+    api.get('/departments').then((res) => {
+      const active = res.data.filter((d: Department) => d.isActive);
+      // Owners only filter within the departments their portfolio spans.
+      setDepartments(isOwner ? active.filter((d: Department) => (d.heads ?? []).some((h) => h.ownerId === user?.id)) : active);
+    });
+    if (isAdmin) {
+      api
+        .get('/users')
+        .then((res) => setOwners(res.data.filter((u: { role: string; isActive: boolean }) => u.role === 'OWNER' && u.isActive)));
+    }
+  }, [canDeptFilter, isAdmin, isOwner, user?.id]);
 
   const filterDept = departments.find((d) => d.id === deptFilter);
-  const headChoices = filterDept?.heads ?? [];
+  // Owners only pick from the heads they own within the chosen department.
+  const headChoices = (filterDept?.heads ?? []).filter((h) => !isOwner || h.ownerId === user?.id);
 
   const handleDownload = async (r: ReportDef, format: 'xlsx' | 'csv') => {
     setDownloading(`${r.key}-${format}`);
@@ -150,8 +206,8 @@ export default function ReportsPage() {
         r.key,
         format,
         r.supportsPeriod ? period : undefined,
-        isAdmin && r.supportsDeptFilter
-          ? { departmentId: deptFilter || undefined, deptHeadId: headFilter || undefined }
+        canDeptFilter && r.supportsDeptFilter
+          ? { departmentId: deptFilter || undefined, deptHeadId: headFilter || undefined, ownerId: ownerFilter || undefined }
           : undefined
       );
     } catch {
@@ -165,7 +221,13 @@ export default function ReportsPage() {
     <div className="mx-auto max-w-5xl p-6">
       <PageHeader
         title="Reports"
-        subtitle={isHead ? 'Export reports for your department head-slice.' : 'Export company-wide financial reports to Excel or CSV.'}
+        subtitle={
+          isOwner
+            ? 'Export reports for the heads you oversee.'
+            : isHead
+            ? 'Export reports for your department head-slice.'
+            : 'Export company-wide financial reports to Excel or CSV.'
+        }
       />
 
       <div className="card mb-6 flex flex-wrap items-center gap-x-5 gap-y-3 p-4">
@@ -177,7 +239,7 @@ export default function ReportsPage() {
             <option value="yearly">Yearly (this financial year)</option>
           </select>
         </label>
-        {isAdmin && (
+        {canDeptFilter && (
           <>
             <label className="flex items-center gap-2.5 text-sm font-medium text-slate-700">
               Department
@@ -187,6 +249,8 @@ export default function ReportsPage() {
                   setDeptFilter(e.target.value);
                   // A head belongs to one department; changing it resets the head filter.
                   setHeadFilter('');
+                  // Department and owner filters are mutually exclusive.
+                  if (e.target.value) setOwnerFilter('');
                 }}
                 className="input w-52"
               >
@@ -210,10 +274,32 @@ export default function ReportsPage() {
                 ))}
               </select>
             </label>
+            {owners.length > 0 && (
+              <label className="flex items-center gap-2.5 text-sm font-medium text-slate-700">
+                Owner
+                <select
+                  value={ownerFilter}
+                  onChange={(e) => {
+                    setOwnerFilter(e.target.value);
+                    // Owner portfolio spans departments, so it clears dept/head.
+                    if (e.target.value) {
+                      setDeptFilter('');
+                      setHeadFilter('');
+                    }
+                  }}
+                  className="input w-44"
+                >
+                  <option value="">All owners</option>
+                  {owners.map((o) => (
+                    <option key={o.id} value={o.id}>{o.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
           </>
         )}
         <span className="text-xs text-slate-400">
-          Period applies to "period-aware" reports{isAdmin ? '; department/head to "dept-filterable" ones' : ''}.
+          Period applies to "period-aware" reports{canDeptFilter ? `; department/head${isAdmin ? '/owner' : ''} to "dept-filterable" ones` : ''}.
         </span>
       </div>
 
@@ -231,7 +317,7 @@ export default function ReportsPage() {
                     period-aware
                   </span>
                 )}
-                {isAdmin && r.supportsDeptFilter && (
+                {canDeptFilter && r.supportsDeptFilter && (
                   <span className="badge bg-slate-100 text-slate-500">
                     <Building2 size={11} />
                     dept-filterable

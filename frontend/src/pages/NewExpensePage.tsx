@@ -86,6 +86,8 @@ export default function NewExpensePage() {
   // against their own slice) so spend always rolls up correctly.
   const lockDepartment = authUser?.role !== 'ADMIN' && !!authUser?.departmentId;
   const lockHead = authUser?.role === 'DEPARTMENT_HEAD' && !!authUser?.deptHeadId;
+  // Owners file within their portfolio: only departments/heads they own are offered.
+  const isOwner = authUser?.role === 'OWNER';
 
   const [form, setForm] = useState({
     invoiceDate: new Date().toISOString().slice(0, 10),
@@ -154,10 +156,19 @@ export default function NewExpensePage() {
 
   const hasErrors = Object.keys(errors).length > 0;
 
+  // Owners only see departments/heads in their own portfolio.
+  const visibleDepartments = useMemo(
+    () => (isOwner ? departments.filter((d) => (d.heads ?? []).some((h) => h.ownerId === authUser?.id)) : departments),
+    [departments, isOwner, authUser?.id],
+  );
+
   const selectedFy = financialYears.find((fy) => fy.id === form.fyId);
   const selectedDept = departments.find((d) => d.id === form.departmentId);
   const selectedCategory = categories.find((c) => c.id === form.categoryId);
-  const deptHeads = useMemo(() => selectedDept?.heads ?? [], [selectedDept]);
+  const deptHeads = useMemo(() => {
+    const heads = selectedDept?.heads ?? [];
+    return isOwner ? heads.filter((h) => h.ownerId === authUser?.id) : heads;
+  }, [selectedDept, isOwner, authUser?.id]);
   const selectedHead = deptHeads.find((h) => h.id === form.deptHeadId);
 
   // A restricted head only has one valid category — snap to it whenever the
@@ -169,7 +180,7 @@ export default function NewExpensePage() {
     }
   }, [restrictedCategoryId]);
 
-  const departmentOptions = useMemo(() => departments.map((d) => ({ value: d.id, label: d.name })), [departments]);
+  const departmentOptions = useMemo(() => visibleDepartments.map((d) => ({ value: d.id, label: d.name })), [visibleDepartments]);
   const headOptions = useMemo(() => deptHeads.map((h) => ({ value: h.id, label: h.name })), [deptHeads]);
   // Heads with a category restriction only ever see that one category.
   const allowedCategories = useMemo(() => {
@@ -192,8 +203,10 @@ export default function NewExpensePage() {
     else if (Number(form.amount) <= 0) e.amount = 'Amount must be greater than 0';
     if (form.gstAmount && Number(form.gstAmount) < 0) e.gstAmount = 'GST cannot be negative';
     if (!form.departmentId) e.departmentId = 'Select a department';
-    // Head attribution is mandatory only when actually submitting.
-    if (!forDraft && deptHeads.length > 0 && !form.deptHeadId) e.deptHeadId = 'Select the department head';
+    // Head attribution is mandatory only when actually submitting — but owners
+    // always need one, since the expense must land on a head in their portfolio.
+    if (isOwner && !form.deptHeadId) e.deptHeadId = 'Select the head this expense is for';
+    else if (!forDraft && deptHeads.length > 0 && !form.deptHeadId) e.deptHeadId = 'Select the department head';
     if (!form.categoryId) e.categoryId = 'Select a category';
     if (!form.fyId) e.fyId = 'Select a financial year';
     return e;

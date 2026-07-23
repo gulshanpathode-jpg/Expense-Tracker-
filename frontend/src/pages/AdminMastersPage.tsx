@@ -32,10 +32,12 @@ function suggestEmail(fullName: string): string {
   return parts.length ? `${parts.join('.')}@${EMAIL_DOMAIN}` : '';
 }
 
-// Admin is a single account, so only these two roles can be assigned here.
+// Admin is a single account, so only these roles can be assigned here. Owners
+// oversee a portfolio of heads across departments and have no department of their own.
 const ROLE_OPTIONS = [
   { value: 'EMPLOYEE', label: 'Employee' },
   { value: 'DEPARTMENT_HEAD', label: 'Department Head' },
+  { value: 'OWNER', label: 'Owner (portfolio)' },
 ];
 
 export default function AdminMastersPage() {
@@ -105,6 +107,21 @@ export default function AdminMastersPage() {
   const activeDepartments = useMemo(() => departments.filter((d) => d.isActive), [departments]);
   const departmentOptions = useMemo(() => activeDepartments.map((d) => ({ value: d.id, label: d.name })), [activeDepartments]);
   const fyOptions = useMemo(() => financialYears.map((fy) => ({ value: fy.id, label: fy.label })), [financialYears]);
+  // Portfolio owners available to assign to heads.
+  const ownerOptions = useMemo(
+    () => users.filter((u) => u.role === 'OWNER' && u.isActive).map((u) => ({ value: u.id, label: u.name })),
+    [users],
+  );
+
+  async function assignOwner(headId: string, ownerId: string) {
+    try {
+      await api.put(`/department-heads/${headId}`, { ownerId: ownerId || null });
+      toast.success(ownerId ? 'Owner assigned' : 'Owner cleared');
+      loadAll();
+    } catch (err: any) {
+      toast.error(errText(err) ?? 'Failed to update owner');
+    }
+  }
 
   const budgetDeptHeads = useMemo(
     () => activeDepartments.find((d) => d.id === budgetDeptId)?.heads ?? [],
@@ -215,7 +232,8 @@ export default function AdminMastersPage() {
       toast.error('Name and email are required');
       return;
     }
-    if (!userDeptId) {
+    // Owners span departments and have none of their own; everyone else needs one.
+    if (userRole !== 'OWNER' && !userDeptId) {
       toast.error('Select a department');
       return;
     }
@@ -237,7 +255,7 @@ export default function AdminMastersPage() {
         name: userName.trim(),
         email: userEmail.trim(),
         role: userRole,
-        departmentId: userDeptId || null,
+        departmentId: userRole === 'OWNER' ? null : userDeptId || null,
         deptHeadId: userRole === 'DEPARTMENT_HEAD' ? userHeadId : null,
         password: userPassword,
       });
@@ -324,12 +342,23 @@ export default function AdminMastersPage() {
                   </button>
                 </div>
                 {(d.heads?.length ?? 0) > 0 && (
-                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  <div className="mt-1.5 space-y-1.5">
                     {d.heads!.map((h) => (
-                      <span key={h.id} className="badge bg-slate-100 text-slate-600">
-                        {h.name}
-                        {h.userId && <ShieldCheck size={11} className="text-emerald-500" />}
-                      </span>
+                      <div key={h.id} className="flex items-center gap-2">
+                        <span className="badge bg-slate-100 text-slate-600 shrink-0">
+                          {h.name}
+                          {h.userId && <ShieldCheck size={11} className="text-emerald-500" />}
+                        </span>
+                        <Select
+                          value={h.ownerId ?? ''}
+                          onChange={(v) => assignOwner(h.id, v)}
+                          options={ownerOptions}
+                          placeholder={ownerOptions.length ? 'No owner' : 'No owners yet'}
+                          disabled={ownerOptions.length === 0}
+                          clearable
+                          className="min-w-36 text-xs"
+                        />
+                      </div>
                     ))}
                   </div>
                 )}
@@ -471,18 +500,20 @@ export default function AdminMastersPage() {
               options={ROLE_OPTIONS}
             />
           </div>
-          <div>
-            <label className="label-xs">Department</label>
-            <Select
-              value={userDeptId}
-              onChange={(v) => {
-                setUserDeptId(v);
-                setUserHeadId('');
-              }}
-              options={departmentOptions}
-              placeholder="Select department"
-            />
-          </div>
+          {userRole !== 'OWNER' && (
+            <div>
+              <label className="label-xs">Department</label>
+              <Select
+                value={userDeptId}
+                onChange={(v) => {
+                  setUserDeptId(v);
+                  setUserHeadId('');
+                }}
+                options={departmentOptions}
+                placeholder="Select department"
+              />
+            </div>
+          )}
           {userRole === 'DEPARTMENT_HEAD' && (
             <div>
               <label className="label-xs">Which Head</label>

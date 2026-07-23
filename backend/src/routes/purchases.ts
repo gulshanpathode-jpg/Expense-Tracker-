@@ -2,29 +2,36 @@ import { Router } from 'express';
 import fs from 'fs';
 import { prisma } from '../lib/prisma';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { blockReadOnly } from '../middleware/readOnly';
+import { blockReadOnlyOrOwner } from '../middleware/readOnly';
 import { writeAudit } from '../lib/audit';
 import { notify } from '../lib/notify';
 import { upload, resolveUploadPath } from '../lib/uploads';
+import { ownerScope } from '../lib/scope';
 
 const router = Router();
 router.use(requireAuth);
 
-// Can `user` see this purchase request? Mirrors the list scoping.
+// Can `user` see this purchase request? Mirrors the list scoping. Owners see
+// requests in any department containing a head from their portfolio, passed in
+// as ownedDeptIds (computed by the caller, since this stays synchronous).
 function canViewRequest(
   user: { sub: string; role: string; departmentId: string | null },
-  request: { requestedById: string; departmentId: string }
+  request: { requestedById: string; departmentId: string },
+  ownedDeptIds?: Set<string>
 ): boolean {
   if (user.role === 'ADMIN' || user.role === 'ACCOUNTS') return true;
   if (request.requestedById === user.sub) return true;
+  if (user.role === 'OWNER') return !!ownedDeptIds?.has(request.departmentId);
   return !!user.departmentId && request.departmentId === user.departmentId;
 }
 
 function canViewOrder(
   user: { role: string; departmentId: string | null },
-  order: { departmentId: string }
+  order: { departmentId: string },
+  ownedDeptIds?: Set<string>
 ): boolean {
   if (user.role === 'ADMIN' || user.role === 'ACCOUNTS') return true;
+  if (user.role === 'OWNER') return !!ownedDeptIds?.has(order.departmentId);
   return !!user.departmentId && order.departmentId === user.departmentId;
 }
 
@@ -40,6 +47,10 @@ router.get('/requests', async (req, res) => {
     where.OR = [{ requestedById: user.sub }, { departmentId: user.departmentId ?? undefined }];
   } else if (user.role === 'DEPARTMENT_HEAD') {
     where.departmentId = user.departmentId ?? undefined;
+  } else if (user.role === 'OWNER') {
+    // Owners see requests across the departments their portfolio spans.
+    const { departmentIds } = await ownerScope(user.sub);
+    where.departmentId = { in: departmentIds };
   } else if (departmentId) {
     where.departmentId = String(departmentId);
   }
@@ -73,13 +84,14 @@ router.get('/requests/:id', async (req, res) => {
     },
   });
   if (!request) return res.status(404).json({ error: 'Purchase request not found' });
-  if (!canViewRequest(req.user!, request)) {
+  const ownedDeptIds = req.user!.role === 'OWNER' ? new Set((await ownerScope(req.user!.sub)).departmentIds) : undefined;
+  if (!canViewRequest(req.user!, request, ownedDeptIds)) {
     return res.status(403).json({ error: 'You do not have access to this purchase request' });
   }
   res.json(request);
 });
 
-router.post('/requests', blockReadOnly, async (req, res) => {
+router.post('/requests', blockReadOnlyOrOwner, async (req, res) => {
   const { departmentId, costCenterId, title, justification, estimatedAmount, items } = req.body;
   const user = req.user!;
   const deptId = departmentId || user.departmentId;
@@ -114,7 +126,7 @@ router.post('/requests', blockReadOnly, async (req, res) => {
   res.status(201).json(request);
 });
 
-router.post('/requests/:id/submit', blockReadOnly, async (req, res) => {
+router.post('/requests/:id/submit', blockReadOnlyOrOwner, async (req, res) => {
   const request = await prisma.purchaseRequest.findUnique({ where: { id: String(req.params.id) } });
   if (!request) return res.status(404).json({ error: 'Purchase request not found' });
   if (request.requestedById !== req.user!.sub && req.user!.role !== 'ADMIN') {
@@ -202,6 +214,9 @@ router.get('/orders', async (req, res) => {
   const user = req.user!;
   if (user.role === 'DEPARTMENT_HEAD' || user.role === 'MANAGER' || user.role === 'EMPLOYEE') {
     where.departmentId = user.departmentId ?? undefined;
+  } else if (user.role === 'OWNER') {
+    const { departmentIds } = await ownerScope(user.sub);
+    where.departmentId = { in: departmentIds };
   }
 
   const orders = await prisma.purchaseOrder.findMany({
@@ -226,7 +241,8 @@ router.get('/orders/:id', async (req, res) => {
     },
   });
   if (!order) return res.status(404).json({ error: 'Purchase order not found' });
-  if (!canViewOrder(req.user!, order)) {
+  const ownedDeptIds = req.user!.role === 'OWNER' ? new Set((await ownerScope(req.user!.sub)).departmentIds) : undefined;
+  if (!canViewOrder(req.user!, order, ownedDeptIds)) {
     return res.status(403).json({ error: 'You do not have access to this purchase order' });
   }
   res.json(order);
@@ -236,7 +252,8 @@ router.get('/orders/:id', async (req, res) => {
 router.get('/orders/:id/quotation', async (req, res) => {
   const order = await prisma.purchaseOrder.findUnique({ where: { id: String(req.params.id) } });
   if (!order) return res.status(404).json({ error: 'Purchase order not found' });
-  if (!canViewOrder(req.user!, order)) {
+  const ownedDeptIds = req.user!.role === 'OWNER' ? new Set((await ownerScope(req.user!.sub)).departmentIds) : undefined;
+  if (!canViewOrder(req.user!, order, ownedDeptIds)) {
     return res.status(403).json({ error: 'You do not have access to this purchase order' });
   }
   if (!order.quotationFilePath) return res.status(404).json({ error: 'No quotation attached' });
